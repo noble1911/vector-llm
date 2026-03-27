@@ -49,53 +49,61 @@ gh issue create --title "Short descriptive title" --body "## Task\n..."
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Mac Mini M4                       │
-│                                                      │
-│  ┌──────────┐    ┌───────────┐    ┌──────────────┐  │
-│  │ External  │───▶│ Whisper   │───▶│ Conversation │  │
-│  │ Mic + VAD │    │ tiny STT  │    │ Manager      │  │
-│  └──────────┘    └───────────┘    └──────┬───────┘  │
-│                                          │           │
-│  ┌──────────┐    ┌───────────┐    ┌──────▼───────┐  │
-│  │ Vector   │───▶│ VLM       │───▶│ LLM Brain    │  │
-│  │ Camera   │    │ (vision)  │    │ (Qwen2.5-3B) │  │
-│  └──────────┘    └───────────┘    └──────┬───────┘  │
-│                                          │           │
-│  ┌──────────┐    ┌───────────┐    ┌──────▼───────┐  │
-│  │ Vector   │◀───│ Kokoro    │◀───│ Vector SDK   │  │
-│  │ Speaker  │    │ TTS       │    │ Control      │  │
-│  └──────────┘    └───────────┘    └──────────────┘  │
-│                                          │           │
-│                                   ┌──────▼───────┐  │
-│                                   │ Butler API   │  │
-│                                   │ (escalation) │  │
-│                                   └──────────────┘  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      Mac Mini M4                          │
+│                                                           │
+│  ┌──────────┐    ┌───────────┐    ┌────────────────┐     │
+│  │ External  │───▶│ Whisper   │───▶│ Conversation   │     │
+│  │ Mic + VAD │    │ tiny STT  │    │ Manager        │     │
+│  └──────────┘    └───────────┘    └───────┬────────┘     │
+│                                           │               │
+│  ┌──────────┐    ┌───────────┐    ┌───────▼────────┐     │
+│  │ Vector   │───▶│ YOLO +    │───▶│ LLM Brain      │     │
+│  │ Camera   │    │ OpenCV    │    │ (Qwen2.5-3B)   │     │
+│  │ (5 fps)  │    │ (real-    │    │ text-only +    │     │
+│  └──────────┘    │  time CV) │    │ tool use       │     │
+│                  └─────┬─────┘    └──┬──────┬──────┘     │
+│                        │             │      │             │
+│                  ┌─────▼─────┐       │  ┌───▼──────────┐ │
+│                  │ VLM       │◀──────┘  │ Vector SDK   │ │
+│                  │ (on-demand│ "look"   │ Control      │ │
+│                  │  tool)    │ tool call └──┬───────────┘ │
+│                  └───────────┘             │              │
+│  ┌──────────┐    ┌───────────┐    ┌───────▼────────┐     │
+│  │ Vector   │◀───│ Kokoro    │◀───│ Butler API     │     │
+│  │ Speaker  │    │ TTS       │    │ (escalation)   │     │
+│  └──────────┘    └───────────┘    └────────────────┘     │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
 1. **External mic** captures audio continuously (Vector's mic is poor quality)
 2. **VAD** filters silence → **Whisper-tiny** transcribes speech segments
 3. **Conversation manager** decides if speech is directed at Vector
-4. **LLM brain** (Qwen2.5-3B via Ollama) reasons about what to say/do
-5. **Vision loop** periodically feeds camera descriptions to the brain
-6. **Vector SDK** executes movement, animations, expressions
-7. **Kokoro TTS** generates speech → played on Vector's speaker
-8. **Butler API** handles complex queries (escalation to Claude)
+4. **LLM brain** (Qwen2.5-3B text-only via Ollama) reasons about what to say/do
+5. **Vision pipeline** runs real-time CV on every camera frame (~5 fps):
+   - **YOLO-nano** detects objects (~2ms/frame)
+   - **OpenCV** detects motion via frame differencing
+   - **Face detection** via Vector SDK
+   - Structured events fed to brain as rolling context
+6. **VLM** (on-demand) — brain can call a `look` tool for a full scene description
+7. **Vector SDK** executes movement, animations, expressions (also via tool calls)
+8. **Kokoro TTS** generates speech → played on Vector's speaker
+9. **Butler API** handles complex queries (escalation to Claude)
 
 ## Tech Stack
 
 | Component | Technology | RAM Budget |
 |-----------|-----------|------------|
-| LLM Brain | Ollama + Qwen2.5-3B | ~2GB |
-| Vision | Qwen2.5-VL-3B or moondream2 | ~1.5-2.5GB |
+| LLM Brain | Ollama + Qwen2.5-3B (text-only) | ~2GB |
+| Real-time CV | YOLOv8-nano + OpenCV | ~4MB + minimal |
+| VLM (on-demand) | Qwen2.5-VL-3B via Ollama | ~2GB (loaded on demand) |
 | STT | Whisper-tiny (faster-whisper) | ~150MB |
 | TTS | Kokoro (already running in home-server) | 0 (shared) |
 | VAD | silero-vad | ~50MB |
-| Robot control | anki_vector SDK | minimal |
+| Robot control | cyb3r_vector_sdk (wire-pod fork) | minimal |
 | Auth/tokens | wire-pod (native app on Mac) | 0 (native) |
-| **Total new** | | **~4-5GB** |
+| **Total new** | | **~2.5GB** (+ ~2GB when VLM active) |
 
 ## Project Structure
 
@@ -110,7 +118,7 @@ vector-llm/
 ├── src/
 │   ├── main.py               # Entry point — starts all loops
 │   ├── brain.py              # LLM reasoning engine
-│   ├── vision.py             # Camera capture + VLM processing
+│   ├── vision.py             # Real-time CV pipeline + on-demand VLM
 │   ├── stt.py                # Always-on speech-to-text
 │   ├── tts.py                # Text-to-speech via Kokoro
 │   ├── vector_control.py     # Vector SDK wrapper
@@ -127,8 +135,9 @@ vector-llm/
 |----------|--------|-----------|
 | Wake word | Eliminated | Core motivation — "Hey Vector" is annoying and unreliable |
 | Audio input | External USB mic | Vector's mic is poor quality |
-| LLM | Qwen2.5-3B via Ollama | Fits in RAM, fast on M4 Metal, good quality for size |
-| Vision model | TBD (Qwen2.5-VL-3B or moondream2) | Need to test quality vs speed trade-off |
+| LLM | Qwen2.5-3B text-only via Ollama | Fits in RAM, fast on M4 Metal, good quality for size |
+| Real-time CV | YOLOv8-nano + OpenCV | ~2ms/frame on M4, real-time object/motion detection |
+| VLM | Qwen2.5-VL-3B (on-demand tool) | Only loaded when brain calls "look" — saves ~2GB normally |
 | STT | Whisper-tiny via faster-whisper | ~150MB, sub-second latency |
 | TTS | Kokoro (shared with home-server) | Already deployed, good quality |
 | Escalation | Butler API → Claude | Complex questions routed to full LLM |
@@ -159,4 +168,5 @@ The Mac Mini also runs the home-server stack (~3.5GB Docker containers). Current
 - **Always check `gh issue list` first** before starting work
 - **Create issues for discovered work** — don't let insights get lost
 - The local LLM handles casual conversation; complex queries escalate to Butler/Claude
-- Vector's camera is 640x480 — optimize vision pipeline for low-res input
+- Vector's camera streams at 640x360 (~5 fps) — must call `init_camera_feed()` before capture
+- `cyb3r_vector_sdk` requires `protobuf<4` and `cache_animation_lists=False` for wire-pod

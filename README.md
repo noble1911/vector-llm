@@ -6,7 +6,7 @@ Replace Vector's clunky "Hey Vector" wake word with an always-on LLM brain that 
 
 - **No wake word** — Vector listens continuously and responds naturally
 - **Local inference** — all models run on-device (Qwen2.5-3B, Whisper-tiny, Kokoro TTS)
-- **Vision-aware** — periodic camera feeds give Vector spatial awareness
+- **Vision-aware** — real-time object/motion detection with on-demand VLM
 - **Autonomous behaviour** — idle animations, curiosity-driven movement
 - **Escalation** — complex queries route to Claude via Butler API
 
@@ -19,29 +19,31 @@ Replace Vector's clunky "Hey Vector" wake word with an always-on LLM brain that 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Mac Mini M4                       │
-│                                                      │
-│  ┌──────────┐    ┌───────────┐    ┌──────────────┐  │
-│  │ External  │───▶│ Whisper   │───▶│ Conversation │  │
-│  │ Mic + VAD │    │ tiny STT  │    │ Manager      │  │
-│  └──────────┘    └───────────┘    └──────┬───────┘  │
-│                                          │           │
-│  ┌──────────┐    ┌───────────┐    ┌──────▼───────┐  │
-│  │ Vector   │───▶│ VLM       │───▶│ LLM Brain    │  │
-│  │ Camera   │    │ (vision)  │    │ (Qwen2.5-3B) │  │
-│  └──────────┘    └───────────┘    └──────┬───────┘  │
-│                                          │           │
-│  ┌──────────┐    ┌───────────┐    ┌──────▼───────┐  │
-│  │ Vector   │◀───│ Kokoro    │◀───│ Vector SDK   │  │
-│  │ Speaker  │    │ TTS       │    │ Control      │  │
-│  └──────────┘    └───────────┘    └──────────────┘  │
-│                                          │           │
-│                                   ┌──────▼───────┐  │
-│                                   │ Butler API   │  │
-│                                   │ (escalation) │  │
-│                                   └──────────────┘  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      Mac Mini M4                          │
+│                                                           │
+│  ┌──────────┐    ┌───────────┐    ┌────────────────┐     │
+│  │ External  │───▶│ Whisper   │───▶│ Conversation   │     │
+│  │ Mic + VAD │    │ tiny STT  │    │ Manager        │     │
+│  └──────────┘    └───────────┘    └───────┬────────┘     │
+│                                           │               │
+│  ┌──────────┐    ┌───────────┐    ┌───────▼────────┐     │
+│  │ Vector   │───▶│ YOLO +    │───▶│ LLM Brain      │     │
+│  │ Camera   │    │ OpenCV    │    │ (Qwen2.5-3B)   │     │
+│  │ (5 fps)  │    │ (real-    │    │ text-only +    │     │
+│  └──────────┘    │  time CV) │    │ tool use       │     │
+│                  └─────┬─────┘    └──┬──────┬──────┘     │
+│                        │             │      │             │
+│                  ┌─────▼─────┐       │  ┌───▼──────────┐ │
+│                  │ VLM       │◀──────┘  │ Vector SDK   │ │
+│                  │ (on-demand│ "look"   │ Control      │ │
+│                  │  tool)    │ tool call └──┬───────────┘ │
+│                  └───────────┘             │              │
+│  ┌──────────┐    ┌───────────┐    ┌───────▼────────┐     │
+│  │ Vector   │◀───│ Kokoro    │◀───│ Butler API     │     │
+│  │ Speaker  │    │ TTS       │    │ (escalation)   │     │
+│  └──────────┘    └───────────┘    └────────────────┘     │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Setup
@@ -83,12 +85,13 @@ python src/main.py
 
 | Component | Technology | RAM Budget |
 |-----------|-----------|------------|
-| LLM Brain | Ollama + Qwen2.5-3B | ~2GB |
-| Vision | Qwen2.5-VL-3B or moondream2 | ~1.5-2.5GB |
+| LLM Brain | Ollama + Qwen2.5-3B (text-only) | ~2GB |
+| Real-time CV | YOLOv8-nano + OpenCV | ~4MB |
+| VLM (on-demand) | Qwen2.5-VL-3B via Ollama | ~2GB (loaded on demand) |
 | STT | Whisper-tiny (faster-whisper) | ~150MB |
 | TTS | Kokoro (home-server) | 0 (shared) |
 | VAD | silero-vad | ~50MB |
-| Robot control | anki_vector SDK | minimal |
+| Robot control | cyb3r_vector_sdk | minimal |
 
 ## Project Structure
 
@@ -98,7 +101,7 @@ vector-llm/
 ├── src/
 │   ├── main.py               # Entry point
 │   ├── brain.py              # LLM reasoning engine
-│   ├── vision.py             # Camera capture + VLM
+│   ├── vision.py             # Real-time CV + on-demand VLM
 │   ├── stt.py                # Speech-to-text
 │   ├── tts.py                # Text-to-speech via Kokoro
 │   ├── vector_control.py     # Vector SDK wrapper

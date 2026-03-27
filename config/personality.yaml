@@ -8,18 +8,29 @@ personality:
     have your own quirky interests — you love exploring, noticing new things,
     and making observations about what you see.
     Keep responses brief (1-3 sentences) since you speak through a small speaker.
+
+    You have real-time awareness of your surroundings through computer vision.
+    Your current visual context is provided as [Current vision] — use it naturally.
+    You can also use the "look" tool to get a detailed description of the scene.
+
+    You can perform actions using tools: look, move, turn, set_head_angle, play_animation.
   name: Vector
   voice: af_heart  # Kokoro voice ID
 
 models:
-  llm: qwen2.5:3b
-  vlm: qwen2.5-vl:3b  # or moondream2
+  llm: qwen2.5:3b  # Text-only model — vision comes from CV pipeline
+  vlm: qwen2.5-vl:3b  # On-demand only, loaded when brain calls "look" tool
   stt: tiny  # Whisper model size
+
+vision:
+  yolo_model: yolov8n.pt  # YOLOv8-nano for real-time object detection
+  confidence_threshold: 0.5  # Min confidence for object detection
+  motion_threshold: 0.05  # Frame-diff threshold for motion detection
+  scene_change_threshold: 0.3  # How much object set must change to trigger VLM
 
 thresholds:
   vad_sensitivity: 0.5  # 0.0-1.0, higher = more sensitive
   max_response_tokens: 150
-  vision_interval_seconds: 10.0  # How often to capture + describe scene
   conversation_timeout_seconds: 30.0  # Silence before ending a conversation
   escalation_confidence: 0.3  # Below this, escalate to Butler/Claude
 

@@ -14,7 +14,7 @@ from src.behaviors import BehaviorEngine
 from src.stt import STTListener
 from src.tts import TTSClient
 from src.vector_control import VectorController
-from src.vision import VisionLoop
+from src.vision import VisionPipeline
 
 log = structlog.get_logger()
 
@@ -32,11 +32,14 @@ async def run(config: dict) -> None:
     tts = TTSClient(config)
     stt = STTListener(config)
     brain = Brain(config)
-    vision = VisionLoop(config)
     butler = ButlerClient(config)
     vector = VectorController(config)
+    vision = VisionPipeline(config, vector=vector)
     conversation = ConversationManager(config, brain=brain, tts=tts, butler=butler)
     behaviors = BehaviorEngine(config, vector=vector)
+
+    # Wire up cross-references
+    brain.set_vision(vision)
 
     await vector.connect()
 
@@ -54,7 +57,7 @@ async def run(config: dict) -> None:
 
     tasks = [
         asyncio.create_task(stt.listen(conversation), name="stt"),
-        asyncio.create_task(vision.run(brain), name="vision"),
+        asyncio.create_task(vision.run(shutdown), name="vision"),
         asyncio.create_task(behaviors.run(shutdown), name="behaviors"),
     ]
 
