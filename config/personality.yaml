@@ -37,7 +37,7 @@ personality:
   voice: af_heart  # Kokoro voice ID
 
 models:
-  llm: qwen2.5:3b  # Text-only model — vision comes from CV pipeline
+  llm: qwen2.5:7b  # Text-only model with native tool calling
   vlm: qwen2.5vl:3b  # On-demand only, loaded when brain calls "look" tool
   stt: tiny  # Whisper model size
 

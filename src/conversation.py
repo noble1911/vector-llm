@@ -129,40 +129,34 @@ class ConversationManager:
 
         return response
 
-    async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
-        """Process a vision event and optionally respond.
+    async def awareness_tick(self) -> BrainResponse | None:
+        """Periodic check — let the brain react to accumulated vision context.
 
-        Vision events get the scene context already injected into the system
-        prompt (including the last VLM description), so the brain should NOT
-        need to call 'look' again. We strip look calls to prevent the
-        look → speak → look infinite chain.
-
-        Args:
-            event_summary: Text summary of the vision event.
+        Called when NOT in conversation. The brain already has scene state
+        in its system prompt; this just gives it a chance to initiate.
 
         Returns:
-            BrainResponse if Vector reacts, None if ignored.
+            BrainResponse if the brain wants to say something, None otherwise.
         """
         async with self._processing_lock:
-            response = await self._brain.handle_vision_event(event_summary)
+            response = await self._brain.handle_vision_event(
+                "Check your surroundings. If something is noteworthy, react. "
+                "If nothing interesting, say nothing."
+            )
 
             if response is None:
                 return None
 
-            # Strip 'look' tool calls from vision reactions — the brain
-            # already has scene context and doesn't need to look again.
+            # Strip look calls — brain already has scene context.
             if response.tool_calls:
                 response.tool_calls = [
                     tc for tc in response.tool_calls if tc["name"] != "look"
                 ]
 
-            # Speak the initial response before executing any tools.
             if response.speech:
                 await self._speak(response.speech)
 
-            # Execute remaining tool calls (movement, animations, etc).
             response, _spoke = await self._execute_tools(response)
-
             return response
 
     async def _execute_tools(self, response: BrainResponse) -> tuple[BrainResponse, bool]:
@@ -317,9 +311,12 @@ class ConversationManager:
     async def run_vision_event_loop(
         self, shutdown: asyncio.Event
     ) -> None:
-        """Continuously process vision events from the pipeline.
+        """Drain vision events (scene state updates silently) and do periodic awareness ticks.
 
-        Applies a cooldown between reactions to avoid being too chatty.
+        Vision events update scene state in the VisionPipeline automatically.
+        This loop just drains the queue so it doesn't fill up, and periodically
+        gives the brain a chance to react to the scene — but only when not
+        in conversation.
 
         Args:
             shutdown: Event that signals when to stop.
@@ -329,34 +326,27 @@ class ConversationManager:
 
         log.info("conversation.vision_event_loop started")
 
-        # Minimum seconds between vision-triggered reactions.
-        cooldown_s = 30.0
-        last_reaction_at = 0.0
+        awareness_interval_s = 45.0
+        last_awareness_at = time.monotonic()
 
         while not shutdown.is_set():
             try:
-                # Wait for events with a timeout so we can check shutdown.
+                # Drain events from the queue (scene state is already updated).
                 try:
-                    event = await asyncio.wait_for(
+                    await asyncio.wait_for(
                         self._vision.events.get(), timeout=1.0
                     )
                 except asyncio.TimeoutError:
-                    continue
+                    pass
 
-                # Enforce cooldown between vision reactions.
+                # Periodic awareness tick — only when idle.
                 now = time.monotonic()
-                if (now - last_reaction_at) < cooldown_s:
-                    continue
-
-                summary = (
-                    f"{event.event_type}: "
-                    f"{', '.join(f'{k}={v}' for k, v in event.data.items())}"
-                )
-                result = await self.handle_vision_event(summary)
-
-                # Only update cooldown if brain actually reacted.
-                if result is not None:
-                    last_reaction_at = time.monotonic()
+                if (
+                    not self._active
+                    and (now - last_awareness_at) >= awareness_interval_s
+                ):
+                    last_awareness_at = now
+                    await self.awareness_tick()
 
             except Exception:
                 log.exception("conversation.vision_event_loop error")

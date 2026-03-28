@@ -1,9 +1,7 @@
-"""LLM reasoning engine — text-only model with tool use for actions and vision."""
+"""LLM reasoning engine — uses Ollama native tool calling for actions."""
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -20,64 +18,116 @@ log = structlog.get_logger()
 # Maximum conversation history messages to keep (sliding window).
 _MAX_CONTEXT_MESSAGES = 20
 
-# Tools the brain can invoke, formatted for the system prompt.
+# Tools in Ollama native format (JSON Schema).
 TOOLS = [
     {
-        "name": "look",
-        "description": "Look closely at what's in front of you using your camera. "
-        "Use this when you want a detailed description of the scene.",
-        "parameters": {},
-    },
-    {
-        "name": "move",
-        "description": "Drive forward or backward.",
-        "parameters": {
-            "direction": "forward or backward",
-            "distance_mm": "distance in millimeters (10-500)",
+        "type": "function",
+        "function": {
+            "name": "look",
+            "description": "Look closely at the scene using your camera for a detailed description.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
         },
     },
     {
-        "name": "turn",
-        "description": "Turn left or right.",
-        "parameters": {
-            "direction": "left or right",
-            "angle_degrees": "degrees to turn (e.g. 45, 90, 180)",
+        "type": "function",
+        "function": {
+            "name": "move",
+            "description": "Drive forward or backward.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["forward", "backward"],
+                        "description": "Direction to move",
+                    },
+                    "distance_mm": {
+                        "type": "number",
+                        "description": "Distance in millimeters (10-500)",
+                    },
+                },
+                "required": ["direction", "distance_mm"],
+            },
         },
     },
     {
-        "name": "set_head_angle",
-        "description": "Tilt your head up or down to look at different things.",
-        "parameters": {
-            "angle_degrees": "head angle (-22=down to 45=up)",
+        "type": "function",
+        "function": {
+            "name": "turn",
+            "description": "Turn left or right.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["left", "right"],
+                        "description": "Direction to turn",
+                    },
+                    "angle_degrees": {
+                        "type": "number",
+                        "description": "Degrees to turn (e.g. 45, 90, 180)",
+                    },
+                },
+                "required": ["direction", "angle_degrees"],
+            },
         },
     },
     {
-        "name": "play_animation",
-        "description": "Express an emotion through body language.",
-        "parameters": {
-            "name": "animation name (e.g. happy, sad, curious, surprised)",
+        "type": "function",
+        "function": {
+            "name": "set_head_angle",
+            "description": "Tilt your head up or down to look at different things.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "angle_degrees": {
+                        "type": "number",
+                        "description": "Head angle from -22 (down) to 45 (up)",
+                    },
+                },
+                "required": ["angle_degrees"],
+            },
         },
     },
     {
-        "name": "ask_butler",
-        "description": "Escalate a question to Butler (Claude) for complex queries "
-        "you can't handle — real-time data, home automation, deep reasoning, "
-        "web searches. Rephrase the question clearly for Butler.",
-        "parameters": {
-            "question": "the question to ask Butler",
+        "type": "function",
+        "function": {
+            "name": "play_animation",
+            "description": "Express an emotion through body language.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Animation name (e.g. happy, sad, curious, surprised)",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_butler",
+            "description": "Escalate a question to Butler (Claude) for complex queries you can't handle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask Butler",
+                    },
+                },
+                "required": ["question"],
+            },
         },
     },
 ]
-
-# Regex to extract tool calls from LLM output: [tool_name({"key": "value"})]
-# Also matches malformed attempts like [look()] or [look({"})].
-_TOOL_CALL_PATTERN = re.compile(
-    r"\[(\w+)\(([^)]*)\)\]",
-    re.DOTALL,
-)
-
-# Tools that take no parameters — accept any match as valid.
-_NO_PARAM_TOOLS = {t["name"] for t in TOOLS if not t["parameters"]}
 
 
 @dataclass
@@ -88,85 +138,11 @@ class BrainResponse:
     tool_calls: list[dict] = field(default_factory=list)
 
 
-def parse_response(text: str) -> BrainResponse:
-    """Parse raw LLM output into speech and tool calls.
-
-    The LLM is instructed to output tool calls as [tool_name({"param": "value"})].
-    Everything else is treated as speech.
-
-    Args:
-        text: Raw LLM response text.
-
-    Returns:
-        BrainResponse with separated speech and tool calls.
-    """
-    tool_calls = []
-    speech = text
-
-    for match in _TOOL_CALL_PATTERN.finditer(text):
-        tool_name = match.group(1)
-        raw_params = match.group(2).strip()
-
-        # Always strip the tool call from speech, even if parsing fails.
-        speech = speech.replace(match.group(0), "")
-
-        # No-param tools (like "look") — accept regardless of what's inside parens.
-        if tool_name in _NO_PARAM_TOOLS:
-            tool_calls.append({"name": tool_name, "parameters": {}})
-            continue
-
-        # Try to parse JSON parameters.
-        try:
-            params = json.loads(raw_params) if raw_params else {}
-        except json.JSONDecodeError:
-            log.warning("failed to parse tool params", tool=tool_name, raw=raw_params)
-            continue
-
-        tool_calls.append({"name": tool_name, "parameters": params})
-
-    speech = speech.strip()
-
-    return BrainResponse(speech=speech, tool_calls=tool_calls)
-
-
-def build_tool_prompt() -> str:
-    """Format tool definitions for inclusion in the system prompt."""
-    lines = [
-        "IMPORTANT: You are a physical robot. To perform ANY physical action (moving, turning, looking, animating), you MUST include a tool call.",
-        "Saying you will move is NOT the same as moving. You MUST use the tool.",
-        "",
-        "Tool call format: [tool_name({\"param\": \"value\"})]",
-        "",
-        "Available tools:",
-    ]
-    for tool in TOOLS:
-        params_str = ", ".join(
-            f'"{k}": {v}' for k, v in tool["parameters"].items()
-        )
-        if params_str:
-            lines.append(f'- {tool["name"]}({{{params_str}}}): {tool["description"]}')
-        else:
-            lines.append(f'- {tool["name"]}(): {tool["description"]}')
-    lines.append("")
-    lines.append("ALWAYS include the tool call when you want to do something physical.")
-    lines.append("Examples:")
-    lines.append('  That\'s interesting! [look()]')
-    lines.append('  Moving forward! [move({"direction": "forward", "distance_mm": 100})]')
-    lines.append('  Turning left! [turn({"direction": "left", "angle_degrees": 90})]')
-    return "\n".join(lines)
-
-
 class Brain:
-    """Text-only LLM with tool use for actions and on-demand vision.
+    """LLM with native tool calling for actions and on-demand vision.
 
-    The brain receives:
-    - Transcribed speech from the user
-    - Structured vision events (objects, motion, faces) from the CV pipeline
-    - Tool call results (VLM descriptions, movement confirmations)
-
-    The brain outputs:
-    - Speech text to say
-    - Tool calls to execute (look, move, turn, animate)
+    Uses Ollama's structured tool calling — the model returns tool calls
+    as structured JSON rather than embedded text, eliminating parsing issues.
     """
 
     def __init__(self, config: dict, *, client: OllamaClient | None = None) -> None:
@@ -187,7 +163,7 @@ class Brain:
         self._memory_context = ctx
 
     def _build_system_prompt(self) -> str:
-        """Build the full system prompt including memory, vision context, and tools."""
+        """Build the full system prompt including memory and vision context."""
         parts = [self.system_prompt.strip()]
 
         # Inject remembered facts from persistent memory.
@@ -196,23 +172,49 @@ class Brain:
             if facts_text:
                 parts.append(facts_text)
 
-        # Inject current vision state
+        # Inject current vision state.
         if self._vision:
             scene_summary = self._vision.scene.summary()
             parts.append(f"\n[Current vision] {scene_summary}")
 
-        # Append tool definitions
-        parts.append(f"\n{build_tool_prompt()}")
-
         return "\n".join(parts)
 
     def _trim_context(self) -> None:
-        """Keep conversation history within the sliding window.
-
-        Called after appending new messages, so we trim to max size.
-        """
+        """Keep conversation history within the sliding window."""
         while len(self._context) > _MAX_CONTEXT_MESSAGES:
             self._context.pop(0)
+
+    def _make_response(self, chat_response) -> BrainResponse:
+        """Convert an Ollama ChatResponse into a BrainResponse."""
+        msg = chat_response.message
+        return BrainResponse(
+            speech=msg.content.strip(),
+            tool_calls=msg.tool_calls or [],
+        )
+
+    async def _call_llm(
+        self, *, tools: list[dict] | None = None
+    ) -> BrainResponse:
+        """Send the current context to the LLM and return a structured response."""
+        messages = [
+            ChatMessage(role="system", content=self._build_system_prompt()),
+            *self._context,
+        ]
+
+        response = await self._client.chat(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            tools=tools,
+        )
+
+        # Store the assistant's response (including tool calls) in context.
+        self._context.append(response.message)
+        self._trim_context()
+
+        result = self._make_response(response)
+
+        return result, response.total_duration_ms
 
     async def think(self, user_message: str) -> BrainResponse:
         """Generate a response to the user's message.
@@ -225,28 +227,13 @@ class Brain:
         """
         self._context.append(ChatMessage(role="user", content=user_message))
 
-        messages = [
-            ChatMessage(role="system", content=self._build_system_prompt()),
-            *self._context,
-        ]
-
-        response = await self._client.chat(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-        )
-
-        raw_text = response.message.content
-        self._context.append(ChatMessage(role="assistant", content=raw_text))
-        self._trim_context()
-
-        result = parse_response(raw_text)
+        result, duration_ms = await self._call_llm(tools=TOOLS)
 
         log.info(
             "brain.think",
             speech=result.speech[:80] if result.speech else "",
             tool_calls=len(result.tool_calls),
-            duration_ms=response.total_duration_ms,
+            duration_ms=duration_ms,
         )
 
         return result
@@ -261,79 +248,44 @@ class Brain:
         Returns:
             BrainResponse with follow-up speech/actions.
         """
-        tool_msg = f"[{tool_name} result] {result}"
-        self._context.append(ChatMessage(role="user", content=tool_msg))
+        self._context.append(ChatMessage(
+            role="tool",
+            content=result,
+            name=tool_name,
+        ))
 
-        messages = [
-            ChatMessage(role="system", content=self._build_system_prompt()),
-            *self._context,
-        ]
-
-        response = await self._client.chat(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-        )
-
-        raw_text = response.message.content
-        self._context.append(ChatMessage(role="assistant", content=raw_text))
-        self._trim_context()
-
-        parsed = parse_response(raw_text)
+        parsed, duration_ms = await self._call_llm(tools=TOOLS)
 
         log.info(
             "brain.handle_tool_result",
             tool=tool_name,
             speech=parsed.speech[:80] if parsed.speech else "",
+            duration_ms=duration_ms,
         )
 
         return parsed
 
     async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
-        """React to a vision event (motion, new face, scene change).
-
-        Not every event needs a response — the brain decides.
-
-        Args:
-            event_summary: Text summary of what changed.
-
-        Returns:
-            BrainResponse if the brain wants to react, None if it ignores it.
-        """
+        """React to a vision event — kept lightweight, no tools."""
         prompt = (
             f"[vision event] {event_summary}\n"
             "React briefly if this is interesting, or say nothing if it's not noteworthy."
         )
         self._context.append(ChatMessage(role="user", content=prompt))
 
-        messages = [
-            ChatMessage(role="system", content=self._build_system_prompt()),
-            *self._context,
-        ]
+        # No tools for vision events — just speak or stay quiet.
+        result, duration_ms = await self._call_llm(tools=None)
 
-        response = await self._client.chat(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-        )
-
-        raw_text = response.message.content
-        self._context.append(ChatMessage(role="assistant", content=raw_text))
-        self._trim_context()
-
-        parsed = parse_response(raw_text)
-
-        # If the brain has nothing to say, treat it as ignoring the event.
-        if not parsed.speech and not parsed.tool_calls:
+        if not result.speech:
             return None
 
         log.info(
             "brain.handle_vision_event",
             vision_event=event_summary[:60],
-            speech=parsed.speech[:80] if parsed.speech else "",
+            speech=result.speech[:80] if result.speech else "",
         )
 
-        return parsed
+        return result
 
     def reset_context(self) -> None:
         """Clear conversation history."""
