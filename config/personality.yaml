@@ -54,7 +54,7 @@ audio:
 
 thresholds:
   vad_sensitivity: 0.5  # 0.0-1.0, higher = more sensitive
-  max_response_tokens: 80
+  max_response_tokens: 60
   conversation_timeout_seconds: 30.0  # Silence before ending a conversation
   escalation_confidence: 0.3  # Below this, escalate to Butler/Claude
 

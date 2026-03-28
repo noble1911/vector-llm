@@ -224,16 +224,17 @@ class VectorController:
 
     # ---- Speech ----
 
-    async def display_on_screen(self, text: str, duration_sec: float = 3.0) -> None:
-        """Display text (including emoji) on Vector's face screen.
+    async def display_on_screen(self, text: str, duration_sec: float = 2.0) -> None:
+        """Display text (including emoji) on Vector's face screen, then restore eyes.
 
         Args:
             text: Text or emoji to render on the 184x96 screen.
-            duration_sec: How long to show it.
+            duration_sec: How long to show it before restoring eyes.
         """
         self._ensure_connected()
 
         def _display():
+            import time as _time
             from PIL import Image, ImageDraw, ImageFont
             import anki_vector.screen
 
@@ -266,6 +267,9 @@ class VectorController:
             self._robot.screen.set_screen_with_image_data(
                 screen_data, duration_sec, interrupt_running=True
             )
+            # Wait then trigger an animation to restore the default face.
+            _time.sleep(duration_sec)
+            self._robot.anim.play_animation_trigger("ObservingIdleEyesOnly")
 
         await asyncio.to_thread(_display)
         log.info("vector.display_on_screen", text=text[:20])
