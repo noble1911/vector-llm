@@ -157,7 +157,7 @@ The Mac Mini also runs the home-server stack (~3.5GB Docker containers). Current
 - **Structured logging** with `structlog` or `logging`
 - **Config via YAML** — personality, thresholds, model choices
 - Commit style: imperative mood, brief description
-- Git SSH alias: use `github.com` host (key: `~/.ssh/id_ed25519_github`)
+- Git push: use `GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_noble1911" git push origin main`
 
 ## Notes for Future Sessions
 
