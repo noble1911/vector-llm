@@ -285,6 +285,7 @@ class TTSClient:
             TTSError: If synthesis fails and no fallback is available.
         """
         # Strip emoji — TTS can't speak them.
+        from src.screen import extract_emoji
         text, _ = extract_emoji(text)
 
         if not text.strip():

@@ -99,7 +99,7 @@ class VectorController:
             def _connect():
                 robot = anki_vector.Robot(
                     cache_animation_lists=False,
-                    behavior_activation_timeout=30,
+                    behavior_activation_timeout=60,
                 )
                 robot.connect()
                 return robot
@@ -224,59 +224,36 @@ class VectorController:
 
     # ---- Speech ----
 
-    async def display_on_screen(self, text: str, duration_sec: float = 2.0) -> None:
-        """Display text (including emoji) on Vector's face screen, then restore eyes.
+    async def display_on_screen(
+        self,
+        image: Any,
+        duration_sec: float = 2.0,
+    ) -> None:
+        """Display a PIL Image on Vector's face screen.
 
         Args:
-            text: Text or emoji to render on the 184x96 screen.
-            duration_sec: How long to show it before restoring eyes.
+            image: PIL Image (184x96 RGB).
+            duration_sec: How long to show it.
         """
         self._ensure_connected()
 
         def _display():
             import time as _time
-            from PIL import Image, ImageDraw, ImageFont
             import anki_vector.screen
+            import anki_vector.color
 
-            img = Image.new("RGB", (184, 96), color=(0, 0, 0))
-            draw = ImageDraw.Draw(img)
-
-            # Use Apple Color Emoji for full-colour rendering.
-            font = None
-            for font_path in [
-                "/System/Library/Fonts/Apple Color Emoji.ttc",
-                "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-            ]:
-                try:
-                    font = ImageFont.truetype(font_path, 64)
-                    break
-                except (OSError, IOError):
-                    continue
-
-            if font is None:
-                font = ImageFont.load_default()
-
-            # Center the text.
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x = (184 - tw) // 2
-            y = (96 - th) // 2
-            draw.text((x, y), text, font=font, embedded_color=True)
-
-            screen_data = anki_vector.screen.convert_image_to_screen_data(img)
+            screen_data = anki_vector.screen.convert_image_to_screen_data(image)
             self._robot.screen.set_screen_with_image_data(
                 screen_data, duration_sec, interrupt_running=True
             )
-            # Wait then clear the screen by showing a very short black frame.
-            # The SDK will restore the default animated face automatically after.
             _time.sleep(duration_sec)
-            import anki_vector.color
+            # Flash black to hand control back to the default face.
             self._robot.screen.set_screen_to_color(
                 anki_vector.color.Color(rgb=[0, 0, 0]), duration_sec=0.1
             )
 
         await asyncio.to_thread(_display)
-        log.info("vector.display_on_screen", text=text[:20])
+        log.info("vector.display_on_screen")
 
     async def say(self, text: str) -> None:
         """Make Vector speak using his built-in TTS (fallback for Kokoro).

@@ -140,8 +140,10 @@ class ConversationManager:
         """
         async with self._processing_lock:
             response = await self._brain.handle_vision_event(
-                "Check your surroundings. If something is noteworthy, react. "
-                "If nothing interesting, say nothing."
+                "Glance at your surroundings. Only speak if something NEW and "
+                "surprising just appeared — like a person arriving or leaving. "
+                "Do NOT describe what you see. Do NOT narrate the scene. "
+                "If nothing changed, say absolutely nothing."
             )
 
             if response is None:
@@ -250,6 +252,21 @@ class ConversationManager:
                 return "No memories found for that query."
             return "[memory not available]"
 
+        # "show_on_screen" displays content on Vector's face.
+        if tool_name == "show_on_screen":
+            from src.screen import render_emoji, render_text, render_color, render_icon
+            display_type = params.get("type", "text")
+            content = params.get("content", "")
+            if display_type == "icon":
+                img = render_icon(content)
+            elif display_type == "color":
+                img = render_color(content)
+            else:
+                img = render_text(content)
+            if self._vector:
+                asyncio.create_task(self._vector.display_on_screen(img, duration_sec=3.0))
+            return f"Showing {display_type}: {content}"
+
         # "ask_butler" escalates to Claude via Butler API.
         if tool_name == "ask_butler":
             question = params.get("question", "")
@@ -273,14 +290,15 @@ class ConversationManager:
         Args:
             text: Text to speak (may contain emoji).
         """
-        from src.tts import extract_emoji
+        from src.screen import extract_emoji, render_emoji
 
         self._last_spoke_at = time.monotonic()
 
         # Extract emoji for screen display.
         _, emojis = extract_emoji(text)
         if emojis and self._vector:
-            asyncio.create_task(self._vector.display_on_screen(emojis, duration_sec=3.0))
+            img = render_emoji(emojis)
+            asyncio.create_task(self._vector.display_on_screen(img, duration_sec=2.0))
 
         if self._tts:
             try:
