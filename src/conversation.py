@@ -231,6 +231,25 @@ class ConversationManager:
                 return description
             return "[no vision available]"
 
+        # "remember" stores a fact in persistent memory.
+        if tool_name == "remember":
+            fact = params.get("fact", "")
+            category = params.get("category", "other")
+            if self._memory and self._memory.available:
+                await self._memory.remember(fact, category=category)
+                return f"Remembered: {fact}"
+            return "[memory not available]"
+
+        # "recall" searches persistent memory.
+        if tool_name == "recall":
+            query = params.get("query", "")
+            if self._memory and self._memory.available:
+                facts = await self._memory.recall(query, limit=5)
+                if facts:
+                    return "\n".join(f"- [{f['category']}] {f['fact']}" for f in facts)
+                return "No memories found for that query."
+            return "[memory not available]"
+
         # "ask_butler" escalates to Claude via Butler API.
         if tool_name == "ask_butler":
             question = params.get("question", "")

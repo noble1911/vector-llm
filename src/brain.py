@@ -163,6 +163,45 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "remember",
+            "description": "Remember a fact about someone or something for later. Use this when you learn names, preferences, or anything worth keeping.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact": {
+                        "type": "string",
+                        "description": "The fact to remember (e.g. 'Ron likes coffee')",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["preference", "relationship", "observation", "schedule", "other"],
+                        "description": "Category of the fact",
+                    },
+                },
+                "required": ["fact", "category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Search your memories for something you learned before.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for (e.g. 'what is their name')",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_butler",
             "description": "Escalate a question to Butler (Claude) for complex queries you can't handle.",
             "parameters": {
