@@ -198,13 +198,13 @@ class ConversationManager:
         # Extract emoji before TTS.
         _, emojis = extract_emoji(text)
 
-        # Show emoji on screen briefly (before TTS so it appears while speaking).
+        # Show emoji on screen while speaking (fire-and-forget, don't block TTS).
         if emojis and self._vector:
             try:
                 img = render_emoji(emojis)
-                await self._vector.display_on_screen(img, duration_sec=1.0)
+                asyncio.create_task(self._vector.display_on_screen(img, duration_sec=1.0))
             except Exception:
-                pass  # Screen display is best-effort.
+                pass
 
         if self._tts:
             try:

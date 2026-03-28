@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import re
 import struct
 import tempfile
 from typing import TYPE_CHECKING, Any
@@ -20,34 +19,6 @@ if TYPE_CHECKING:
     from src.vector_control import VectorController
 
 log = structlog.get_logger()
-
-# Regex to match emoji and other non-speech Unicode symbols.
-_EMOJI_PATTERN = re.compile(
-    "["
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F680-\U0001F6FF"  # transport & map
-    "\U0001F1E0-\U0001F1FF"  # flags
-    "\U00002702-\U000027B0"  # dingbats
-    "\U0001F900-\U0001F9FF"  # supplemental symbols
-    "\U0001FA00-\U0001FA6F"  # chess symbols
-    "\U0001FA70-\U0001FAFF"  # symbols extended
-    "\U00002600-\U000026FF"  # misc symbols
-    "]+",
-    flags=re.UNICODE,
-)
-
-
-def extract_emoji(text: str) -> tuple[str, str]:
-    """Extract emoji from text, returning (clean_text, emoji_string).
-
-    Returns:
-        Tuple of (text without emoji, concatenated emoji found).
-    """
-    emojis = "".join(_EMOJI_PATTERN.findall(text))
-    clean = _EMOJI_PATTERN.sub("", text).strip()
-    return clean, emojis
-
 
 # Kokoro TTS API path (OpenAI-compatible).
 _TTS_PATH = "/v1/audio/speech"
