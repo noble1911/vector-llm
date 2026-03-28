@@ -124,9 +124,9 @@ class ConversationManager:
         # Execute tool calls and follow up (tool results may produce more speech).
         response, _spoke = await self._execute_tools(response)
 
-        # Store conversation and auto-learn in background.
+        # Store conversation history in background (no auto_learn — brain uses remember tool).
         if self._memory and response.speech:
-            asyncio.create_task(self._persist_exchange(text, response.speech))
+            asyncio.create_task(self._persist_history(text, response.speech))
 
         return response
 
@@ -315,14 +315,13 @@ class ConversationManager:
         except Exception:
             log.exception("memory.load_context_failed")
 
-    async def _persist_exchange(self, user_text: str, assistant_text: str) -> None:
-        """Store conversation messages and auto-learn facts (background task)."""
+    async def _persist_history(self, user_text: str, assistant_text: str) -> None:
+        """Store conversation messages in Postgres (background task)."""
         if not self._memory:
             return
         try:
             await self._memory.store_message("user", user_text)
             await self._memory.store_message("assistant", assistant_text)
-            await self._memory.auto_learn(user_text, assistant_text)
         except Exception:
             log.exception("memory.persist_failed")
 
