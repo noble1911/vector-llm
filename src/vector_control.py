@@ -93,6 +93,16 @@ class VectorController:
         Raises:
             VectorConnectionError: If connection fails.
         """
+        # Disconnect any stale connection first.
+        if self._robot is not None:
+            try:
+                await asyncio.to_thread(self._robot.disconnect)
+            except Exception:
+                pass
+            self._robot = None
+            self._connected = False
+            self._camera_feed_active = False
+
         try:
             import anki_vector
 

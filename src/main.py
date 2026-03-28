@@ -1,4 +1,4 @@
-"""Entry point — starts all async loops and initializes components."""
+"""Entry point — starts all async loops with auto-recovery on failure."""
 
 import asyncio
 import logging
@@ -19,11 +19,33 @@ from src.vision import VisionPipeline
 
 log = structlog.get_logger()
 
+# Retry settings for Vector connection.
+_MAX_CONNECT_RETRIES = 10
+_CONNECT_RETRY_DELAY_S = 15
+
 
 def load_config(path: str = "config/personality.yaml") -> dict:
     """Load configuration from YAML file."""
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+async def connect_with_retry(vector: VectorController) -> None:
+    """Connect to Vector with retries — handles reboots and docking."""
+    for attempt in range(1, _MAX_CONNECT_RETRIES + 1):
+        try:
+            await vector.connect()
+            return
+        except Exception as e:
+            if attempt == _MAX_CONNECT_RETRIES:
+                raise
+            log.warning(
+                "vector.connect_retry",
+                attempt=attempt,
+                max=_MAX_CONNECT_RETRIES,
+                error=str(e)[:80],
+            )
+            await asyncio.sleep(_CONNECT_RETRY_DELAY_S)
 
 
 async def run(config: dict) -> None:
@@ -55,7 +77,7 @@ async def run(config: dict) -> None:
     # Wire up cross-references
     brain.set_vision(vision)
 
-    await vector.connect()
+    await connect_with_retry(vector)
 
     shutdown = asyncio.Event()
 
@@ -78,7 +100,57 @@ async def run(config: dict) -> None:
         asyncio.create_task(behaviors.run(shutdown), name="behaviors"),
     ]
 
-    await shutdown.wait()
+    # Monitor tasks — restart any that die unexpectedly.
+    while not shutdown.is_set():
+        done, _ = await asyncio.wait(
+            tasks + [asyncio.create_task(shutdown.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if shutdown.is_set():
+            break
+
+        for task in done:
+            if task.get_name() == "shutdown_waiter":
+                continue
+            name = task.get_name()
+            exc = task.exception() if not task.cancelled() else None
+            if exc:
+                log.error("task_crashed", task=name, error=str(exc)[:100])
+
+                # Attempt to reconnect if it was a Vector connection issue.
+                if "Vector" in str(exc) or "grpc" in str(exc).lower():
+                    log.info("attempting_reconnect", task=name)
+                    try:
+                        await vector.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        await connect_with_retry(vector)
+                        if name == "vision":
+                            await vector.start_camera_feed()
+                    except Exception as e:
+                        log.error("reconnect_failed", error=str(e)[:80])
+                        shutdown.set()
+                        break
+
+                # Restart the crashed task.
+                log.info("task_restarting", task=name)
+                if name == "stt":
+                    new_task = asyncio.create_task(stt.listen(conversation), name="stt")
+                elif name == "vision":
+                    new_task = asyncio.create_task(vision.run(shutdown), name="vision")
+                elif name == "vision_events":
+                    new_task = asyncio.create_task(
+                        conversation.run_vision_event_loop(shutdown), name="vision_events"
+                    )
+                elif name == "behaviors":
+                    new_task = asyncio.create_task(behaviors.run(shutdown), name="behaviors")
+                else:
+                    continue
+
+                tasks = [t for t in tasks if t is not task] + [new_task]
+
     log.info("shutting down")
 
     for task in tasks:
