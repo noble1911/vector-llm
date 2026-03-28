@@ -392,7 +392,11 @@ class ConversationManager:
                     self._end_conversation()
 
                 # Periodic VLM snapshot — update scene description silently.
-                if (now - last_vlm_snapshot_at) >= vlm_snapshot_interval_s:
+                # Skip during active conversations to avoid competing with brain.
+                if (
+                    not self._active
+                    and (now - last_vlm_snapshot_at) >= vlm_snapshot_interval_s
+                ):
                     last_vlm_snapshot_at = now
                     try:
                         description = await self._vision.describe_scene()
