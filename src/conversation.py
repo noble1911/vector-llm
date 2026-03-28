@@ -253,8 +253,9 @@ class ConversationManager:
             return "[memory not available]"
 
         # "show_on_screen" displays content on Vector's face.
+        # We store the image and display it after TTS finishes to avoid collision.
         if tool_name == "show_on_screen":
-            from src.screen import render_emoji, render_text, render_color, render_icon
+            from src.screen import render_text, render_color, render_icon
             display_type = params.get("type", "text")
             content = params.get("content", "")
             if display_type == "icon":
@@ -263,8 +264,7 @@ class ConversationManager:
                 img = render_color(content)
             else:
                 img = render_text(content)
-            if self._vector:
-                asyncio.create_task(self._vector.display_on_screen(img, duration_sec=3.0))
+            self._pending_screen_image = img
             return f"Showing {display_type}: {content}"
 
         # "ask_butler" escalates to Claude via Butler API.
@@ -285,31 +285,31 @@ class ConversationManager:
         return f"[{tool_name} unavailable — no vector controller]"
 
     async def _speak(self, text: str) -> None:
-        """Speak text via TTS and display any emoji on Vector's screen.
+        """Speak text via TTS, then show any pending screen image.
 
         Args:
-            text: Text to speak (may contain emoji).
+            text: Text to speak (may contain emoji which are stripped by TTS).
         """
         self._last_spoke_at = time.monotonic()
 
         if self._tts:
             try:
                 await self._tts.speak(text)
-                return
             except NotImplementedError:
                 pass
             except Exception:
                 log.exception("tts.speak failed, falling back to vector")
+                if self._vector:
+                    try:
+                        await self._vector.say(text)
+                    except Exception:
+                        log.exception("vector.say failed")
 
-        # Fallback to Vector's built-in TTS.
-        if self._vector:
-            try:
-                await self._vector.say(text)
-                return
-            except Exception:
-                log.exception("vector.say failed")
-
-        log.warning("conversation.no_tts_available", text=text[:60])
+        # Show pending screen image after TTS finishes (no collision).
+        pending = getattr(self, "_pending_screen_image", None)
+        if pending is not None and self._vector:
+            self._pending_screen_image = None
+            asyncio.create_task(self._vector.display_on_screen(pending, duration_sec=3.0))
 
     async def _load_memory_context(self, text: str) -> None:
         """Load relevant memories and inject into the brain's system prompt."""
