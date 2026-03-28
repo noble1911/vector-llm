@@ -8,7 +8,6 @@ Orchestrates the full loop:
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -26,61 +25,8 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
-# Patterns that indicate speech is directed at Vector.
-_DIRECT_ADDRESS_PATTERNS = [
-    re.compile(r"\bvector\b", re.IGNORECASE),
-    re.compile(r"\bhey robot\b", re.IGNORECASE),
-    re.compile(r"\blittle guy\b", re.IGNORECASE),
-    re.compile(r"\bhey buddy\b", re.IGNORECASE),
-]
-
-# Default follow-up window: if Vector spoke recently, assume next speech is for us.
+# Default follow-up window (kept for timeout logic).
 _DEFAULT_FOLLOWUP_WINDOW_S = 10.0
-
-# Maximum consecutive ignored transcriptions before auto-activating.
-# Prevents the manager from going completely silent if heuristics fail.
-_MAX_IGNORED_BEFORE_HINT = 5
-
-
-def is_directed_at_vector(
-    text: str,
-    *,
-    last_spoke_at: float,
-    now: float,
-    followup_window_s: float = _DEFAULT_FOLLOWUP_WINDOW_S,
-    is_active: bool = False,
-) -> bool:
-    """Determine if transcribed speech is directed at Vector.
-
-    Uses simple heuristics — no LLM call needed for this fast path:
-    1. Direct name mention ("Vector", "hey robot", etc.)
-    2. Conversation is already active (follow-up turn)
-    3. Within follow-up window of Vector's last speech
-
-    Args:
-        text: Transcribed speech text.
-        last_spoke_at: Timestamp of Vector's last speech (0 if never).
-        now: Current timestamp.
-        followup_window_s: Seconds after speaking to assume follow-up.
-        is_active: Whether a conversation is currently active.
-
-    Returns:
-        True if the speech appears to be for Vector.
-    """
-    # Direct address always counts.
-    for pattern in _DIRECT_ADDRESS_PATTERNS:
-        if pattern.search(text):
-            return True
-
-    # Active conversation — assume continuation.
-    if is_active:
-        return True
-
-    # Within follow-up window of last speech.
-    if last_spoke_at > 0 and (now - last_spoke_at) < followup_window_s:
-        return True
-
-    return False
 
 
 class ConversationManager:
@@ -103,9 +49,6 @@ class ConversationManager:
     ) -> None:
         thresholds = config.get("thresholds", {})
         self.timeout_s: float = thresholds.get("conversation_timeout_seconds", 30.0)
-        self.followup_window_s: float = thresholds.get(
-            "followup_window_seconds", _DEFAULT_FOLLOWUP_WINDOW_S
-        )
 
         self._brain = brain
         self._tts = tts
@@ -117,7 +60,6 @@ class ConversationManager:
         self._active = False
         self._last_spoke_at: float = 0.0
         self._last_interaction_at: float = 0.0
-        self._ignored_count: int = 0
 
         # Lock to prevent concurrent processing of transcriptions.
         self._processing_lock = asyncio.Lock()
@@ -147,29 +89,12 @@ class ConversationManager:
     async def _handle_transcription_inner(self, text: str) -> BrainResponse | None:
         now = time.monotonic()
 
-        # Check for conversation timeout.
+        # Check for conversation timeout — reset context after long silence.
         if self._active and self._last_interaction_at > 0:
             if (now - self._last_interaction_at) > self.timeout_s:
                 self._end_conversation()
 
-        directed = is_directed_at_vector(
-            text,
-            last_spoke_at=self._last_spoke_at,
-            now=now,
-            followup_window_s=self.followup_window_s,
-            is_active=self._active,
-        )
-
-        if not directed:
-            self._ignored_count += 1
-            log.debug(
-                "conversation.ignored",
-                text=text[:60],
-                ignored_count=self._ignored_count,
-            )
-            return None
-
-        # Activate conversation.
+        # Always-on: every transcription is treated as directed at us.
         if not self._active:
             self._active = True
             log.info("conversation.started", trigger=text[:60])
