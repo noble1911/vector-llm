@@ -291,12 +291,7 @@ class ConversationManager:
         Args:
             text: Text to speak (may contain emoji which are stripped by TTS).
         """
-        from src.screen import extract_emoji, render_emoji
-
         self._last_spoke_at = time.monotonic()
-
-        # Extract emoji before TTS — we'll display them after speech finishes.
-        _, emojis = extract_emoji(text)
 
         if self._tts:
             try:
@@ -310,11 +305,6 @@ class ConversationManager:
                         await self._vector.say(text)
                     except Exception:
                         log.exception("vector.say failed")
-
-        # Display emoji on screen after TTS finishes (no collision).
-        if emojis and self._vector:
-            img = render_emoji(emojis)
-            asyncio.create_task(self._vector.display_on_screen(img, duration_sec=3.0))
 
     async def _load_memory_context(self, text: str) -> None:
         """Load relevant memories and inject into the brain's system prompt."""
