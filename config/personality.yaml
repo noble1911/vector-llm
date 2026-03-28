@@ -28,6 +28,9 @@ vision:
   motion_threshold: 0.05  # Frame-diff threshold for motion detection
   scene_change_threshold: 0.3  # How much object set must change to trigger VLM
 
+audio:
+  device_index: 0  # "Usb Audio Device" on Mac Mini
+
 thresholds:
   vad_sensitivity: 0.5  # 0.0-1.0, higher = more sensitive
   max_response_tokens: 150
