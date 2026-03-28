@@ -36,7 +36,7 @@ async def run(config: dict) -> None:
     tts = TTSClient(config, vector=vector)
     vision = VisionPipeline(config, vector=vector)
     conversation = ConversationManager(
-        config, brain=brain, tts=tts, vector=vector, vision=vision
+        config, brain=brain, tts=tts, vector=vector, vision=vision, butler=butler
     )
     behaviors = BehaviorEngine(config, vector=vector)
 

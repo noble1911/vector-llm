@@ -18,6 +18,7 @@ from src.brain import BrainResponse
 
 if TYPE_CHECKING:
     from src.brain import Brain
+    from src.butler_client import ButlerClient
     from src.tts import TTSClient
     from src.vector_control import VectorController
     from src.vision import VisionPipeline
@@ -96,6 +97,7 @@ class ConversationManager:
         tts: TTSClient | None = None,
         vector: VectorController | None = None,
         vision: VisionPipeline | None = None,
+        butler: ButlerClient | None = None,
     ) -> None:
         thresholds = config.get("thresholds", {})
         self.timeout_s: float = thresholds.get("conversation_timeout_seconds", 30.0)
@@ -107,6 +109,7 @@ class ConversationManager:
         self._tts = tts
         self._vector = vector
         self._vision = vision
+        self._butler = butler
 
         self._active = False
         self._last_spoke_at: float = 0.0
@@ -262,6 +265,17 @@ class ConversationManager:
                 description = await self._vision.describe_scene()
                 return description
             return "[no vision available]"
+
+        # "ask_butler" escalates to Claude via Butler API.
+        if tool_name == "ask_butler":
+            question = params.get("question", "")
+            if self._butler:
+                try:
+                    return await self._butler.ask(question)
+                except Exception as e:
+                    log.warning("butler.escalation_failed", error=str(e))
+                    return f"[Butler unavailable: {e}]"
+            return "[Butler not configured]"
 
         # All other tools go through VectorController.
         if self._vector:

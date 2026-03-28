@@ -359,6 +359,81 @@ class TestToolExecution:
         vector.execute_tool.assert_not_called()
 
 
+class TestButlerEscalation:
+    @pytest.mark.asyncio
+    async def test_ask_butler_tool_dispatches_to_butler(self):
+        brain = MagicMock()
+        brain.think = AsyncMock(
+            return_value=_make_brain_response(
+                "Let me check with Butler.",
+                [{"name": "ask_butler", "parameters": {"question": "What's the weather?"}}],
+            )
+        )
+        brain.handle_tool_result = AsyncMock(
+            return_value=_make_brain_response("Butler says it's sunny!")
+        )
+
+        butler = MagicMock()
+        butler.ask = AsyncMock(return_value="It's 22°C and sunny in London.")
+
+        vector = MagicMock()
+        vector.say = AsyncMock()
+
+        mgr = ConversationManager(
+            _make_config(), brain=brain, vector=vector, butler=butler
+        )
+
+        await mgr.handle_transcription("Vector, what's the weather?")
+
+        butler.ask.assert_called_once_with("What's the weather?")
+        brain.handle_tool_result.assert_called_once_with(
+            "ask_butler", "It's 22°C and sunny in London."
+        )
+
+    @pytest.mark.asyncio
+    async def test_butler_unavailable_returns_error(self):
+        brain = MagicMock()
+        brain.think = AsyncMock(
+            return_value=_make_brain_response(
+                "Let me ask Butler.",
+                [{"name": "ask_butler", "parameters": {"question": "Test"}}],
+            )
+        )
+        brain.handle_tool_result = AsyncMock(
+            return_value=_make_brain_response("Sorry, Butler is down.")
+        )
+
+        butler = MagicMock()
+        butler.ask = AsyncMock(side_effect=RuntimeError("Connection refused"))
+
+        mgr = ConversationManager(_make_config(), brain=brain, butler=butler)
+
+        await mgr.handle_transcription("Vector, ask Butler something")
+
+        result_arg = brain.handle_tool_result.call_args[0][1]
+        assert "unavailable" in result_arg.lower() or "Butler" in result_arg
+
+    @pytest.mark.asyncio
+    async def test_no_butler_configured(self):
+        brain = MagicMock()
+        brain.think = AsyncMock(
+            return_value=_make_brain_response(
+                "Asking Butler.",
+                [{"name": "ask_butler", "parameters": {"question": "Test"}}],
+            )
+        )
+        brain.handle_tool_result = AsyncMock(
+            return_value=_make_brain_response("I can't reach Butler.")
+        )
+
+        mgr = ConversationManager(_make_config(), brain=brain)
+
+        await mgr.handle_transcription("Vector, ask Butler")
+
+        result_arg = brain.handle_tool_result.call_args[0][1]
+        assert "not configured" in result_arg.lower()
+
+
 class TestSpeech:
     @pytest.mark.asyncio
     async def test_tts_preferred_over_vector_say(self):

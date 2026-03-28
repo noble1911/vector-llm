@@ -56,6 +56,15 @@ TOOLS = [
             "name": "animation name (e.g. happy, sad, curious, surprised)",
         },
     },
+    {
+        "name": "ask_butler",
+        "description": "Escalate a question to Butler (Claude) for complex queries "
+        "you can't handle — real-time data, home automation, deep reasoning, "
+        "web searches. Rephrase the question clearly for Butler.",
+        "parameters": {
+            "question": "the question to ask Butler",
+        },
+    },
 ]
 
 # Regex to extract tool calls from LLM output: [tool_name({"key": "value"})]
