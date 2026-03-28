@@ -212,7 +212,7 @@ class STTListener:
         _audio_debug_counter = 0
 
         with stream:
-            log.info("stt listening", device=self._device_index or "default")
+            log.info("stt listening", device=self._device_index if self._device_index is not None else "default")
             while True:
                 chunk = await audio_queue.get()
 
