@@ -84,6 +84,8 @@ class OllamaClient:
             "think": False,  # Disable Qwen3 thinking mode for real-time responses.
             "options": {
                 "num_predict": max_tokens,
+                "repeat_penalty": 1.3,
+                "temperature": 0.8,
             },
         }
         if tools:
