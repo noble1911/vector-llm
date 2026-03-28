@@ -132,8 +132,10 @@ def parse_response(text: str) -> BrainResponse:
 def build_tool_prompt() -> str:
     """Format tool definitions for inclusion in the system prompt."""
     lines = [
-        "You can perform actions by including tool calls in your response.",
-        "Format: [tool_name({\"param\": \"value\"})]",
+        "IMPORTANT: You are a physical robot. To perform ANY physical action (moving, turning, looking, animating), you MUST include a tool call.",
+        "Saying you will move is NOT the same as moving. You MUST use the tool.",
+        "",
+        "Tool call format: [tool_name({\"param\": \"value\"})]",
         "",
         "Available tools:",
     ]
@@ -146,10 +148,10 @@ def build_tool_prompt() -> str:
         else:
             lines.append(f'- {tool["name"]}(): {tool["description"]}')
     lines.append("")
-    lines.append("You may include zero or more tool calls alongside your speech.")
+    lines.append("ALWAYS include the tool call when you want to do something physical.")
     lines.append("Examples:")
     lines.append('  That\'s interesting! [look()]')
-    lines.append('  Let me move closer. [move({"direction": "forward", "distance_mm": 100})]')
+    lines.append('  Moving forward! [move({"direction": "forward", "distance_mm": 100})]')
     lines.append('  Turning left! [turn({"direction": "left", "angle_degrees": 90})]')
     return "\n".join(lines)
 
