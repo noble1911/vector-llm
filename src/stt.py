@@ -31,6 +31,7 @@ VAD_CHUNK_SAMPLES = 512
 MIN_SPEECH_MS = 1500  # Ignore segments shorter than this (Whisper hallucinates on short clips)
 MAX_SPEECH_MS = 30000  # Force-stop segments longer than this
 SILENCE_TIMEOUT_MS = 800  # End segment after this much silence
+PRE_ROLL_CHUNKS = 10  # Keep ~320ms of audio before VAD triggers to capture word onsets
 
 
 def assemble_speech_segments(
@@ -64,13 +65,16 @@ def assemble_speech_segments(
     in_segment = state.get("in_segment", False)
     buffers = state.setdefault("buffers", [])
     silence_chunks = state.get("silence_chunks", 0)
+    pre_roll = state.setdefault("pre_roll", [])
 
     if is_speech:
         state["silence_chunks"] = 0
 
         if not in_segment:
             state["in_segment"] = True
-            state["buffers"] = [audio_chunk]
+            # Prepend pre-roll audio so we don't lose the start of speech.
+            state["buffers"] = list(pre_roll) + [audio_chunk]
+            state["pre_roll"] = []
             return None
 
         buffers.append(audio_chunk)
@@ -87,6 +91,10 @@ def assemble_speech_segments(
 
     # Silence.
     if not in_segment:
+        # Maintain a rolling pre-roll buffer of recent silence/non-speech audio.
+        pre_roll.append(audio_chunk)
+        if len(pre_roll) > PRE_ROLL_CHUNKS:
+            pre_roll.pop(0)
         return None
 
     buffers.append(audio_chunk)
@@ -112,12 +120,13 @@ def assemble_speech_segments(
 class STTListener:
     """Captures audio from the external mic, runs VAD, and transcribes speech."""
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, *, tts: Any = None) -> None:
         self.model_size = config["models"]["stt"]
         self.vad_sensitivity = config["thresholds"]["vad_sensitivity"]
         self._whisper_model: Any = None
         self._vad_model: Any = None
         self._device_index: int | None = config.get("audio", {}).get("device_index")
+        self._tts = tts  # Used to suppress STT while Vector is speaking.
 
     async def _load_models(self) -> None:
         """Load Whisper and VAD models in a thread."""
@@ -195,7 +204,7 @@ class STTListener:
                     audio_ms=int(len(segment) / SAMPLE_RATE * 1000),
                     latency_ms=int(elapsed_ms),
                 )
-                await conversation.handle_transcription(text)
+                await conversation.handle_transcription(text, timestamp=t0)
         except Exception:
             log.exception("stt transcription_error")
 
@@ -244,6 +253,15 @@ class STTListener:
                 if _audio_debug_counter % 200 == 1:  # Every ~6 seconds
                     peak = float(np.max(np.abs(chunk)))
                     log.info("stt audio_level", peak=f"{peak:.4f}", chunks=_audio_debug_counter)
+
+                # Suppress STT while Vector is speaking to avoid self-hearing.
+                if self._tts and self._tts.is_speaking:
+                    # Discard any in-progress segment — it's contaminated.
+                    if vad_state.get("in_segment"):
+                        vad_state["in_segment"] = False
+                        vad_state["buffers"] = []
+                        vad_state["silence_chunks"] = 0
+                    continue
 
                 try:
                     segment = assemble_speech_segments(

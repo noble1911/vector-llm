@@ -30,11 +30,11 @@ async def run(config: dict) -> None:
     """Initialize all components and run the main loop."""
     log.info("initializing components")
 
-    stt = STTListener(config)
     brain = Brain(config)
     butler = ButlerClient(config)
     vector = VectorController(config)
     tts = TTSClient(config, vector=vector)
+    stt = STTListener(config, tts=tts)
     vision = VisionPipeline(config, vector=vector)
 
     # Persistent memory (optional — gracefully degrades if Postgres unavailable).

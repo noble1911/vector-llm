@@ -98,6 +98,16 @@ class VectorController:
         if not self._connected or self._robot is None:
             raise VectorConnectionError("Not connected to Vector")
 
+    async def _ensure_off_charger(self) -> None:
+        """Drive off charger if currently docked, so wheels can move."""
+        def _check_and_undock():
+            state = self._robot.get_battery_state()
+            if state.is_on_charger_platform:
+                log.info("vector.undocking_for_movement")
+                self._robot.behavior.drive_off_charger()
+
+        await asyncio.to_thread(_check_and_undock)
+
     # ---- Movement ----
 
     async def move(self, direction: str, distance_mm: float) -> None:
@@ -108,6 +118,7 @@ class VectorController:
             distance_mm: Distance in millimeters (clamped to 0-500).
         """
         self._ensure_connected()
+        await self._ensure_off_charger()
 
         distance_mm = max(0.0, min(float(distance_mm), DRIVE_DISTANCE_MAX))
         if direction == "backward":
@@ -131,6 +142,7 @@ class VectorController:
             angle_degrees: Degrees to turn (positive = left, negative = right).
         """
         self._ensure_connected()
+        await self._ensure_off_charger()
 
         from anki_vector.util import Angle
 

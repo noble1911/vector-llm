@@ -69,10 +69,14 @@ TOOLS = [
 ]
 
 # Regex to extract tool calls from LLM output: [tool_name({"key": "value"})]
+# Also matches malformed attempts like [look()] or [look({"})].
 _TOOL_CALL_PATTERN = re.compile(
-    r"\[(\w+)\((\{.*?\})\)\]",
+    r"\[(\w+)\(([^)]*)\)\]",
     re.DOTALL,
 )
+
+# Tools that take no parameters — accept any match as valid.
+_NO_PARAM_TOOLS = {t["name"] for t in TOOLS if not t["parameters"]}
 
 
 @dataclass
@@ -100,13 +104,24 @@ def parse_response(text: str) -> BrainResponse:
 
     for match in _TOOL_CALL_PATTERN.finditer(text):
         tool_name = match.group(1)
-        try:
-            params = json.loads(match.group(2))
-        except json.JSONDecodeError:
-            log.warning("failed to parse tool params", tool=tool_name, raw=match.group(2))
-            continue
-        tool_calls.append({"name": tool_name, "parameters": params})
+        raw_params = match.group(2).strip()
+
+        # Always strip the tool call from speech, even if parsing fails.
         speech = speech.replace(match.group(0), "")
+
+        # No-param tools (like "look") — accept regardless of what's inside parens.
+        if tool_name in _NO_PARAM_TOOLS:
+            tool_calls.append({"name": tool_name, "parameters": {}})
+            continue
+
+        # Try to parse JSON parameters.
+        try:
+            params = json.loads(raw_params) if raw_params else {}
+        except json.JSONDecodeError:
+            log.warning("failed to parse tool params", tool=tool_name, raw=raw_params)
+            continue
+
+        tool_calls.append({"name": tool_name, "parameters": params})
 
     speech = speech.strip()
 
@@ -131,7 +146,9 @@ def build_tool_prompt() -> str:
             lines.append(f'- {tool["name"]}(): {tool["description"]}')
     lines.append("")
     lines.append("You may include zero or more tool calls alongside your speech.")
-    lines.append("Example: That's interesting! Let me take a closer look. [look({})]")
+    lines.append("Examples:")
+    lines.append('  That\'s interesting! [look()]')
+    lines.append('  Let me move closer. [move({"direction": "forward", "distance_mm": 100})]')
     return "\n".join(lines)
 
 

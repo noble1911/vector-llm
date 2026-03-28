@@ -74,16 +74,24 @@ class ConversationManager:
         """Timestamp of Vector's last speech."""
         return self._last_spoke_at
 
-    async def handle_transcription(self, text: str) -> BrainResponse | None:
+    async def handle_transcription(
+        self, text: str, *, timestamp: float = 0.0
+    ) -> BrainResponse | None:
         """Process a new transcription from STT.
 
         Args:
             text: Transcribed speech text.
+            timestamp: perf_counter timestamp when the audio was captured.
 
         Returns:
             BrainResponse if Vector responds, None if speech was ignored.
         """
         async with self._processing_lock:
+            # Drop transcriptions that waited too long for the lock.
+            if timestamp and (time.perf_counter() - timestamp) > 10.0:
+                age = time.perf_counter() - timestamp
+                log.info("conversation.dropped_stale", age_s=f"{age:.1f}", text=text[:40])
+                return None
             return await self._handle_transcription_inner(text)
 
     async def _handle_transcription_inner(self, text: str) -> BrainResponse | None:
@@ -108,12 +116,12 @@ class ConversationManager:
         # Get brain response.
         response = await self._brain.think(text)
 
-        # Execute tool calls and follow up.
-        response, spoke = await self._execute_tools(response)
-
-        # Speak the response (skip if tool chain already spoke it).
-        if response.speech and not spoke:
+        # Speak the initial response before executing any tools.
+        if response.speech:
             await self._speak(response.speech)
+
+        # Execute tool calls and follow up (tool results may produce more speech).
+        response, _spoke = await self._execute_tools(response)
 
         # Store conversation and auto-learn in background.
         if self._memory and response.speech:
@@ -148,11 +156,12 @@ class ConversationManager:
                     tc for tc in response.tool_calls if tc["name"] != "look"
                 ]
 
-            # Execute remaining tool calls (movement, animations, etc).
-            response, spoke = await self._execute_tools(response)
-
-            if response.speech and not spoke:
+            # Speak the initial response before executing any tools.
+            if response.speech:
                 await self._speak(response.speech)
+
+            # Execute remaining tool calls (movement, animations, etc).
+            response, _spoke = await self._execute_tools(response)
 
             return response
 
@@ -168,9 +177,10 @@ class ConversationManager:
         Returns:
             Tuple of (final BrainResponse, whether speech was already spoken).
         """
-        max_rounds = 5  # Prevent infinite tool loops.
+        max_rounds = 2  # Keep tool chains short to stay responsive.
         current = response
         spoke = False
+        look_used = False
 
         for _ in range(max_rounds):
             if not current.tool_calls:
@@ -179,6 +189,12 @@ class ConversationManager:
             for tool_call in current.tool_calls:
                 tool_name = tool_call["name"]
                 params = tool_call.get("parameters", {})
+
+                # Only allow one look per response chain.
+                if tool_name == "look":
+                    if look_used:
+                        continue
+                    look_used = True
 
                 result = await self._dispatch_tool(tool_name, params)
 
@@ -190,6 +206,12 @@ class ConversationManager:
 
                 # Feed result back to brain for follow-up.
                 current = await self._brain.handle_tool_result(tool_name, result)
+
+                # Strip any further look calls from follow-up.
+                if current.tool_calls:
+                    current.tool_calls = [
+                        tc for tc in current.tool_calls if tc["name"] != "look"
+                    ]
 
                 # If follow-up has speech, speak it before next tool.
                 if current.speech:
