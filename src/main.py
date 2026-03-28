@@ -29,11 +29,11 @@ async def run(config: dict) -> None:
     """Initialize all components and run the main loop."""
     log.info("initializing components")
 
-    tts = TTSClient(config)
     stt = STTListener(config)
     brain = Brain(config)
     butler = ButlerClient(config)
     vector = VectorController(config)
+    tts = TTSClient(config, vector=vector)
     vision = VisionPipeline(config, vector=vector)
     conversation = ConversationManager(
         config, brain=brain, tts=tts, vector=vector, vision=vision
