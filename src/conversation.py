@@ -140,10 +140,11 @@ class ConversationManager:
         """
         async with self._processing_lock:
             response = await self._brain.handle_vision_event(
-                "Glance at your surroundings. Only speak if something NEW and "
-                "surprising just appeared — like a person arriving or leaving. "
-                "Do NOT describe what you see. Do NOT narrate the scene. "
-                "If nothing changed, say absolutely nothing."
+                "Glance at your surroundings. You must respond with ONLY "
+                "one of these two options:\n"
+                "1. If a NEW person just arrived or left: greet them briefly.\n"
+                "2. Otherwise: respond with exactly the word NOTHING.\n"
+                "Do NOT describe the scene. Do NOT narrate what you see."
             )
 
             if response is None:

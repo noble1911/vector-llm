@@ -356,16 +356,14 @@ class Brain:
 
     async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
         """React to a vision event — kept lightweight, no tools."""
-        prompt = (
-            f"[vision event] {event_summary}\n"
-            "React briefly if this is interesting, or say nothing if it's not noteworthy."
-        )
+        prompt = f"[vision event] {event_summary}"
         self._context.append(ChatMessage(role="user", content=prompt))
 
         # No tools for vision events — just speak or stay quiet.
         result, duration_ms = await self._call_llm(tools=None)
 
-        if not result.speech:
+        # Filter out non-responses — model should say NOTHING if not noteworthy.
+        if not result.speech or "nothing" in result.speech.lower().strip("., !"):
             return None
 
         log.info(
