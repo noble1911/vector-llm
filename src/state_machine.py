@@ -26,7 +26,7 @@ log = structlog.get_logger()
 _CONVERSATION_TIMEOUT_S = 30.0
 
 # Cooldown between LEARNING triggers.
-_LEARNING_COOLDOWN_S = 60.0
+_LEARNING_COOLDOWN_S = 300.0  # 5 minutes between learning triggers
 
 
 class State(enum.Enum):

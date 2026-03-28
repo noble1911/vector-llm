@@ -242,17 +242,23 @@ class Brain:
 
         result, duration_ms = await self._call_llm(tools=tools)
 
-        # Detect repetition — if we said this recently, clear context and retry.
-        if result.speech and result.speech in self._recent_speeches:
-            log.warning("brain.repetition_detected", speech=result.speech[:40])
-            self._context.clear()
-            self._context.append(ChatMessage(role="user", content=user_message))
-            result, duration_ms = await self._call_llm(tools=tools)
+        # Detect repetition — fuzzy match (first 30 chars).
+        if result.speech:
+            prefix = result.speech[:30].lower()
+            recent_prefixes = [s[:30].lower() for s in self._recent_speeches]
+            if prefix in recent_prefixes:
+                log.warning("brain.repetition_detected", speech=result.speech[:40])
+                self._context.clear()
+                self._context.append(ChatMessage(
+                    role="user",
+                    content=f"(Say something COMPLETELY different) {user_message}",
+                ))
+                result, duration_ms = await self._call_llm(tools=tools)
 
-        # Track recent speeches (keep last 5).
+        # Track recent speeches (keep last 8).
         if result.speech:
             self._recent_speeches.append(result.speech)
-            if len(self._recent_speeches) > 5:
+            if len(self._recent_speeches) > 8:
                 self._recent_speeches.pop(0)
 
         log.info(
@@ -301,9 +307,19 @@ class Brain:
 
         result, duration_ms = await self._call_llm(tools=CHAT_TOOLS)
 
-        # Filter out non-responses — model should say NOTHING if not noteworthy.
+        # Filter out non-responses and repetitions.
         if not result.speech or "nothing" in result.speech.lower().strip("., !"):
             return None
+
+        prefix = result.speech[:30].lower()
+        recent_prefixes = [s[:30].lower() for s in self._recent_speeches]
+        if prefix in recent_prefixes:
+            log.info("brain.vision_repetition_suppressed", speech=result.speech[:40])
+            return None
+
+        self._recent_speeches.append(result.speech)
+        if len(self._recent_speeches) > 8:
+            self._recent_speeches.pop(0)
 
         log.info(
             "brain.handle_vision_event",
