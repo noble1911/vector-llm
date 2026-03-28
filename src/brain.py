@@ -264,20 +264,11 @@ class Brain:
             if history_text:
                 parts.append(history_text)
 
-        # Inject current vision state.
+        # Inject current vision state (YOLO objects with positions + motion).
         if self._vision:
-            scene = self._vision.scene
-            # Quick CV summary (objects, motion).
-            cv_parts = []
-            if scene.objects:
-                cv_parts.append(f"objects: {', '.join(scene.objects)}")
-            if scene.motion_detected:
-                cv_parts.append(f"motion: {scene.motion_region}")
-            if cv_parts:
-                parts.append(f"\n[Current vision] {' | '.join(cv_parts)}")
-            # Last VLM description (richer scene understanding).
-            if scene.last_description:
-                parts.append(f"[Last scene] {scene.last_description}")
+            summary = self._vision.scene.summary()
+            if summary:
+                parts.append(f"\n[Current vision] {summary}")
 
         return "\n".join(parts)
 

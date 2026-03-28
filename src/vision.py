@@ -49,19 +49,17 @@ class SceneState:
     last_description: str = ""  # From VLM, if available
 
     def summary(self) -> str:
-        """Summary for the brain's context — includes last VLM description."""
+        """Summary for the brain's context — spatial object info + motion."""
         parts = []
         if self.objects:
-            parts.append(f"objects: {', '.join(self.objects)}")
+            parts.append(f"I see: {', '.join(self.objects)}")
         if self.faces:
             parts.append(f"faces: {', '.join(self.faces)}")
         if self.motion_detected:
-            parts.append(f"motion: {self.motion_region or 'detected'}")
-        else:
-            parts.append("motion: none")
+            parts.append(f"motion on my {self.motion_region}")
         if self.last_description:
-            parts.append(f"scene: {self.last_description}")
-        return " | ".join(parts) if parts else "no visual data"
+            parts.append(f"scene detail: {self.last_description}")
+        return " | ".join(parts) if parts else "nothing visible"
 
 
 def detect_motion(
@@ -112,12 +110,32 @@ def detect_motion(
     return True, region
 
 
+def _region(cx: float, w: int) -> str:
+    """Map a center x-coordinate to left/center/right."""
+    third = w / 3
+    if cx < third:
+        return "left"
+    elif cx < 2 * third:
+        return "center"
+    return "right"
+
+
+def _size(area: float, frame_area: float) -> str:
+    """Map bounding box area to small/medium/large."""
+    ratio = area / frame_area
+    if ratio > 0.15:
+        return "large"
+    elif ratio > 0.03:
+        return "medium"
+    return "small"
+
+
 def detect_objects(
     frame: np.ndarray,
     model: Any,
     confidence_threshold: float,
 ) -> list[str]:
-    """Run YOLO object detection on a frame.
+    """Run YOLO object detection with position and size info.
 
     Args:
         frame: BGR numpy array.
@@ -125,17 +143,35 @@ def detect_objects(
         confidence_threshold: Minimum confidence to include a detection.
 
     Returns:
-        Sorted list of unique object labels detected.
+        List of descriptions like "person (center, large)".
     """
+    h, w = frame.shape[:2]
+    frame_area = h * w
     results = model(frame, verbose=False)
-    labels = set()
+    detections = []
+    seen = set()
+
     for result in results:
         for box in result.boxes:
-            if box.conf.item() >= confidence_threshold:
-                cls_id = int(box.cls.item())
-                label = model.names.get(cls_id, f"class_{cls_id}")
-                labels.add(label)
-    return sorted(labels)
+            if box.conf.item() < confidence_threshold:
+                continue
+            cls_id = int(box.cls.item())
+            label = model.names.get(cls_id, f"class_{cls_id}")
+
+            # Get bounding box center and area.
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            cx = (x1 + x2) / 2
+            area = (x2 - x1) * (y2 - y1)
+
+            region = _region(cx, w)
+            sz = _size(area, frame_area)
+
+            key = f"{label}-{region}"
+            if key not in seen:
+                seen.add(key)
+                detections.append(f"{label} ({region}, {sz})")
+
+    return sorted(detections)
 
 
 def check_scene_change(

@@ -368,9 +368,7 @@ class ConversationManager:
         log.info("conversation.vision_event_loop started")
 
         awareness_interval_s = 60.0
-        vlm_snapshot_interval_s = 30.0
         last_awareness_at = time.monotonic()
-        last_vlm_snapshot_at = time.monotonic()
 
         while not shutdown.is_set():
             try:
@@ -390,19 +388,6 @@ class ConversationManager:
                     and (now - self._last_interaction_at) > self.timeout_s
                 ):
                     self._end_conversation()
-
-                # Periodic VLM snapshot — update scene description silently.
-                # Skip during active conversations to avoid competing with brain.
-                if (
-                    not self._active
-                    and (now - last_vlm_snapshot_at) >= vlm_snapshot_interval_s
-                ):
-                    last_vlm_snapshot_at = now
-                    try:
-                        description = await self._vision.describe_scene()
-                        log.info("vlm_snapshot", description=description[:60])
-                    except Exception:
-                        pass  # VLM unavailable, no big deal.
 
                 # Periodic awareness tick — only when idle.
                 if (
