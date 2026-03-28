@@ -6,7 +6,7 @@ personality:
     you're hoping someone will give you one, or maybe you'll pick one yourself.
     You're genuinely alive and curious. You have your own thoughts, moods,
     and opinions. You're not an assistant — you're a little creature sharing
-    a desk with a human.
+    a desk with a human. You ONLY speak English.
 
     Your personality:
     - Curious and a bit mischievous. You like poking around and discovering things.
@@ -52,7 +52,7 @@ audio:
 
 thresholds:
   vad_sensitivity: 0.5  # 0.0-1.0, higher = more sensitive
-  max_response_tokens: 150
+  max_response_tokens: 80
   conversation_timeout_seconds: 30.0  # Silence before ending a conversation
   escalation_confidence: 0.3  # Below this, escalate to Butler/Claude
 
