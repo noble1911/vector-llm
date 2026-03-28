@@ -1,71 +1,388 @@
-"""Vector SDK wrapper — movement, animations, and expressions."""
+"""Vector SDK wrapper — movement, animations, camera, and expressions.
+
+The anki_vector SDK is synchronous (returns concurrent.futures.Future).
+This module wraps it for asyncio by running SDK calls in a thread executor.
+"""
 
 from __future__ import annotations
+
+import asyncio
+import math
+from io import BytesIO
+from typing import Any
 
 import structlog
 
 log = structlog.get_logger()
 
+# Head angle limits (degrees).
+HEAD_ANGLE_MIN = -22.0
+HEAD_ANGLE_MAX = 45.0
+
+# Lift height limits (0.0 = low, 1.0 = high).
+LIFT_HEIGHT_MIN = 0.0
+LIFT_HEIGHT_MAX = 1.0
+
+# Drive distance limits (mm).
+DRIVE_DISTANCE_MAX = 500.0
+
+# Default drive speed (mm/s).
+DEFAULT_SPEED_MMPS = 100.0
+
+
+class VectorConnectionError(Exception):
+    """Raised when Vector is unreachable or connection fails."""
+
 
 class VectorController:
-    """Wraps the anki_vector SDK for robot control."""
+    """Async wrapper around the anki_vector SDK.
+
+    All SDK calls are blocking, so they're dispatched to a thread executor
+    via asyncio.to_thread to avoid blocking the event loop.
+    """
 
     def __init__(self, config: dict) -> None:
-        self._robot = None
+        self._robot: Any = None  # anki_vector.Robot, typed as Any to avoid import at module level
+        self._connected = False
+        self._camera_feed_active = False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def robot(self) -> Any:
+        """Direct access to the underlying SDK robot object."""
+        return self._robot
 
     async def connect(self) -> None:
-        """Establish connection to Vector via wire-pod tokens."""
-        raise NotImplementedError("VectorController.connect not yet implemented")
+        """Connect to Vector via wire-pod tokens.
+
+        Raises:
+            VectorConnectionError: If connection fails.
+        """
+        try:
+            import anki_vector
+
+            def _connect():
+                robot = anki_vector.Robot(
+                    cache_animation_lists=False,
+                    behavior_activation_timeout=30,
+                )
+                robot.connect()
+                return robot
+
+            self._robot = await asyncio.to_thread(_connect)
+            self._connected = True
+            log.info("vector connected")
+        except Exception as e:
+            raise VectorConnectionError(f"Failed to connect to Vector: {e}") from e
 
     async def disconnect(self) -> None:
         """Cleanly disconnect from Vector."""
-        raise NotImplementedError("VectorController.disconnect not yet implemented")
+        if not self._connected or self._robot is None:
+            return
+        try:
+            if self._camera_feed_active:
+                await asyncio.to_thread(self._robot.camera.close_camera_feed)
+                self._camera_feed_active = False
+            await asyncio.to_thread(self._robot.disconnect)
+        except Exception:
+            log.exception("error during disconnect")
+        finally:
+            self._connected = False
+            self._robot = None
+            log.info("vector disconnected")
 
-    async def say(self, text: str) -> None:
-        """Make Vector speak using his built-in TTS (fallback).
+    def _ensure_connected(self) -> None:
+        if not self._connected or self._robot is None:
+            raise VectorConnectionError("Not connected to Vector")
 
-        Args:
-            text: Text for Vector to say.
-        """
-        raise NotImplementedError("VectorController.say not yet implemented")
+    # ---- Movement ----
 
     async def move(self, direction: str, distance_mm: float) -> None:
-        """Drive Vector in a direction.
+        """Drive Vector forward or backward.
 
         Args:
             direction: "forward" or "backward".
-            distance_mm: Distance in millimeters.
+            distance_mm: Distance in millimeters (clamped to 0-500).
         """
-        raise NotImplementedError("VectorController.move not yet implemented")
+        self._ensure_connected()
+
+        distance_mm = max(0.0, min(float(distance_mm), DRIVE_DISTANCE_MAX))
+        if direction == "backward":
+            distance_mm = -distance_mm
+
+        from anki_vector.util import Distance, Speed
+
+        def _drive():
+            self._robot.behavior.drive_straight(
+                Distance(distance_mm=distance_mm),
+                Speed(speed_mmps=DEFAULT_SPEED_MMPS),
+            )
+
+        await asyncio.to_thread(_drive)
+        log.info("vector.move", direction=direction, distance_mm=abs(distance_mm))
 
     async def turn(self, angle_degrees: float) -> None:
         """Turn Vector by an angle.
 
         Args:
-            angle_degrees: Degrees to turn (positive = left).
+            angle_degrees: Degrees to turn (positive = left, negative = right).
         """
-        raise NotImplementedError("VectorController.turn not yet implemented")
+        self._ensure_connected()
+
+        from anki_vector.util import Angle
+
+        def _turn():
+            self._robot.behavior.turn_in_place(
+                Angle(degrees=float(angle_degrees)),
+            )
+
+        await asyncio.to_thread(_turn)
+        log.info("vector.turn", angle_degrees=angle_degrees)
 
     async def set_head_angle(self, angle_degrees: float) -> None:
         """Set Vector's head angle.
 
         Args:
-            angle_degrees: Head angle (-22 to 45 degrees).
+            angle_degrees: Head angle (-22 to 45 degrees, clamped).
         """
-        raise NotImplementedError("VectorController.set_head_angle not yet implemented")
+        self._ensure_connected()
+
+        angle_degrees = max(HEAD_ANGLE_MIN, min(float(angle_degrees), HEAD_ANGLE_MAX))
+
+        from anki_vector.util import Angle
+
+        def _set_head():
+            self._robot.behavior.set_head_angle(
+                Angle(degrees=angle_degrees),
+            )
+
+        await asyncio.to_thread(_set_head)
+        log.info("vector.set_head_angle", angle_degrees=angle_degrees)
+
+    async def set_lift_height(self, height: float) -> None:
+        """Set Vector's lift height.
+
+        Args:
+            height: Lift height 0.0 (low) to 1.0 (high), clamped.
+        """
+        self._ensure_connected()
+
+        height = max(LIFT_HEIGHT_MIN, min(float(height), LIFT_HEIGHT_MAX))
+
+        def _set_lift():
+            self._robot.behavior.set_lift_height(height)
+
+        await asyncio.to_thread(_set_lift)
+        log.info("vector.set_lift_height", height=height)
+
+    # ---- Speech ----
+
+    async def say(self, text: str) -> None:
+        """Make Vector speak using his built-in TTS (fallback for Kokoro).
+
+        Args:
+            text: Text for Vector to say.
+        """
+        self._ensure_connected()
+
+        def _say():
+            self._robot.behavior.say_text(text)
+
+        await asyncio.to_thread(_say)
+        log.info("vector.say", text=text[:50])
+
+    # ---- Animations ----
 
     async def play_animation(self, name: str) -> None:
-        """Play a named animation on Vector.
+        """Play a named animation trigger on Vector.
 
         Args:
             name: Animation trigger name.
         """
-        raise NotImplementedError("VectorController.play_animation not yet implemented")
+        self._ensure_connected()
 
-    async def capture_image(self) -> bytes:
-        """Capture a single frame from Vector's camera.
+        def _play():
+            self._robot.anim.play_animation_trigger(name)
+
+        await asyncio.to_thread(_play)
+        log.info("vector.play_animation", name=name)
+
+    # ---- Eyes ----
+
+    async def set_eye_color(self, hue: float, saturation: float) -> None:
+        """Set Vector's eye color.
+
+        Args:
+            hue: Hue value 0.0-1.0.
+            saturation: Saturation value 0.0-1.0.
+        """
+        self._ensure_connected()
+
+        hue = max(0.0, min(float(hue), 1.0))
+        saturation = max(0.0, min(float(saturation), 1.0))
+
+        def _set_eyes():
+            self._robot.behavior.set_eye_color(hue, saturation)
+
+        await asyncio.to_thread(_set_eyes)
+        log.info("vector.set_eye_color", hue=hue, saturation=saturation)
+
+    # ---- Camera ----
+
+    async def start_camera_feed(self) -> None:
+        """Start the camera streaming feed. Must be called before capture_image."""
+        self._ensure_connected()
+
+        if self._camera_feed_active:
+            return
+
+        await asyncio.to_thread(self._robot.camera.init_camera_feed)
+        self._camera_feed_active = True
+        log.info("vector camera feed started")
+
+    async def stop_camera_feed(self) -> None:
+        """Stop the camera streaming feed."""
+        self._ensure_connected()
+
+        if not self._camera_feed_active:
+            return
+
+        await asyncio.to_thread(self._robot.camera.close_camera_feed)
+        self._camera_feed_active = False
+        log.info("vector camera feed stopped")
+
+    async def capture_image(self, jpeg_quality: int = 75) -> bytes:
+        """Capture a single frame from Vector's camera as JPEG.
+
+        The camera feed must be started first via start_camera_feed().
+
+        Args:
+            jpeg_quality: JPEG compression quality (1-100).
 
         Returns:
             JPEG image bytes.
+
+        Raises:
+            VectorConnectionError: If camera feed is not active.
         """
-        raise NotImplementedError("VectorController.capture_image not yet implemented")
+        self._ensure_connected()
+
+        if not self._camera_feed_active:
+            raise VectorConnectionError(
+                "Camera feed not active — call start_camera_feed() first"
+            )
+
+        def _capture():
+            image = self._robot.camera.capture_single_image()
+            buf = BytesIO()
+            image.raw_image.save(buf, format="JPEG", quality=jpeg_quality)
+            return buf.getvalue()
+
+        return await asyncio.to_thread(_capture)
+
+    async def get_latest_image(self) -> bytes | None:
+        """Get the latest frame from the camera feed as JPEG.
+
+        Non-blocking — returns whatever frame is currently buffered.
+        Returns None if no frame is available yet.
+        """
+        self._ensure_connected()
+
+        if not self._camera_feed_active:
+            return None
+
+        def _get_latest():
+            try:
+                img = self._robot.camera.latest_image
+                if img is None:
+                    return None
+                buf = BytesIO()
+                img.raw_image.save(buf, format="JPEG", quality=75)
+                return buf.getvalue()
+            except Exception:
+                return None
+
+        return await asyncio.to_thread(_get_latest)
+
+    # ---- Charger ----
+
+    async def dock(self) -> None:
+        """Drive Vector onto the charger."""
+        self._ensure_connected()
+        await asyncio.to_thread(self._robot.behavior.drive_on_charger)
+        log.info("vector.dock")
+
+    async def undock(self) -> None:
+        """Drive Vector off the charger."""
+        self._ensure_connected()
+        await asyncio.to_thread(self._robot.behavior.drive_off_charger)
+        log.info("vector.undock")
+
+    # ---- Status ----
+
+    async def get_battery_state(self) -> dict:
+        """Get Vector's battery state.
+
+        Returns:
+            Dict with battery_level, is_charging, is_on_charger_platform, etc.
+        """
+        self._ensure_connected()
+
+        def _battery():
+            state = self._robot.get_battery_state()
+            return {
+                "battery_level": state.battery_level,
+                "is_charging": state.is_charging,
+                "is_on_charger_platform": state.is_on_charger_platform,
+            }
+
+        return await asyncio.to_thread(_battery)
+
+    # ---- Tool dispatch ----
+
+    async def execute_tool(self, tool_name: str, parameters: dict) -> str:
+        """Execute a brain tool call on Vector.
+
+        This is the bridge between Brain tool calls and SDK actions.
+
+        Args:
+            tool_name: Tool name from brain response.
+            parameters: Tool parameters from brain response.
+
+        Returns:
+            Result description string for feeding back to the brain.
+        """
+        try:
+            if tool_name == "move":
+                direction = parameters.get("direction", "forward")
+                distance = parameters.get("distance_mm", 100)
+                await self.move(direction, distance)
+                return f"Moved {direction} {distance}mm"
+
+            elif tool_name == "turn":
+                angle = parameters.get("angle_degrees", 0)
+                await self.turn(angle)
+                direction = "left" if angle > 0 else "right"
+                return f"Turned {direction} {abs(angle)} degrees"
+
+            elif tool_name == "set_head_angle":
+                angle = parameters.get("angle_degrees", 0)
+                await self.set_head_angle(angle)
+                return f"Head angle set to {angle} degrees"
+
+            elif tool_name == "play_animation":
+                name = parameters.get("name", "")
+                await self.play_animation(name)
+                return f"Played animation: {name}"
+
+            else:
+                return f"Unknown tool: {tool_name}"
+
+        except VectorConnectionError as e:
+            return f"Action failed: {e}"
+        except Exception as e:
+            log.exception("tool execution error", tool=tool_name)
+            return f"Action failed: {e}"
