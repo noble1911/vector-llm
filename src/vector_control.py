@@ -29,6 +29,19 @@ DRIVE_DISTANCE_MAX = 500.0
 # Default drive speed (mm/s).
 DEFAULT_SPEED_MMPS = 100.0
 
+# Map color names to (hue, saturation) for Vector's eyes.
+COLOR_NAME_TO_HS = {
+    "red": (0.0, 1.0),
+    "orange": (0.05, 1.0),
+    "yellow": (0.12, 1.0),
+    "green": (0.35, 1.0),
+    "cyan": (0.5, 1.0),
+    "blue": (0.65, 1.0),
+    "purple": (0.78, 1.0),
+    "pink": (0.9, 0.7),
+    "white": (0.0, 0.0),
+}
+
 # Map simple emotion names to actual SDK animation triggers.
 EMOTION_TO_TRIGGER = {
     "happy": "DriveEndHappy",
@@ -418,6 +431,16 @@ class VectorController:
             elif tool_name == "dock":
                 await self.dock()
                 return "Successfully docked on charger"
+
+            elif tool_name == "undock":
+                await self.undock()
+                return "Drove off charger, ready to move"
+
+            elif tool_name == "set_eye_color":
+                color_name = parameters.get("color", "white")
+                hue, sat = COLOR_NAME_TO_HS.get(color_name, (0.0, 0.0))
+                await self.set_eye_color(hue, sat)
+                return f"Eye color set to {color_name}"
 
             else:
                 return f"Unknown tool: {tool_name}"

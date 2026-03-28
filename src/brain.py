@@ -130,6 +130,39 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "undock",
+            "description": "Drive off the charging dock so you can move around.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_eye_color",
+            "description": "Change your eye color to express mood or emotion.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "color": {
+                        "type": "string",
+                        "enum": [
+                            "red", "orange", "yellow", "green", "cyan",
+                            "blue", "purple", "pink", "white",
+                        ],
+                        "description": "Eye color to set",
+                    },
+                },
+                "required": ["color"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_butler",
             "description": "Escalate a question to Butler (Claude) for complex queries you can't handle.",
             "parameters": {
