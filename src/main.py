@@ -38,7 +38,7 @@ async def run(config: dict) -> None:
     conversation = ConversationManager(
         config, brain=brain, tts=tts, vector=vector, vision=vision, butler=butler
     )
-    behaviors = BehaviorEngine(config, vector=vector)
+    behaviors = BehaviorEngine(config, vector=vector, conversation=conversation)
 
     # Wire up cross-references
     brain.set_vision(vision)
