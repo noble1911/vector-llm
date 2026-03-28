@@ -38,3 +38,6 @@ endpoints:
   ollama: http://localhost:11434
   kokoro_tts: http://localhost:8880
   butler_api: http://localhost:8000
+
+wirepod:
+  endpoint: http://localhost:8090
