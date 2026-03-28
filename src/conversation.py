@@ -268,12 +268,19 @@ class ConversationManager:
         return f"[{tool_name} unavailable — no vector controller]"
 
     async def _speak(self, text: str) -> None:
-        """Speak text via TTS or fallback to Vector's built-in TTS.
+        """Speak text via TTS and display any emoji on Vector's screen.
 
         Args:
-            text: Text to speak.
+            text: Text to speak (may contain emoji).
         """
+        from src.tts import extract_emoji
+
         self._last_spoke_at = time.monotonic()
+
+        # Extract emoji for screen display.
+        _, emojis = extract_emoji(text)
+        if emojis and self._vector:
+            asyncio.create_task(self._vector.display_on_screen(emojis, duration_sec=3.0))
 
         if self._tts:
             try:

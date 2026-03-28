@@ -224,6 +224,54 @@ class VectorController:
 
     # ---- Speech ----
 
+    async def display_on_screen(self, text: str, duration_sec: float = 3.0) -> None:
+        """Display text (including emoji) on Vector's face screen.
+
+        Args:
+            text: Text or emoji to render on the 184x96 screen.
+            duration_sec: How long to show it.
+        """
+        self._ensure_connected()
+
+        def _display():
+            from PIL import Image, ImageDraw, ImageFont
+            import anki_vector.screen
+
+            img = Image.new("RGB", (184, 96), color=(0, 0, 0))
+            draw = ImageDraw.Draw(img)
+
+            # Try to find a font that supports emoji, fall back to default.
+            font = None
+            font_size = 48
+            for font_path in [
+                "/System/Library/Fonts/Apple Color Emoji.ttc",
+                "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+            ]:
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    break
+                except (OSError, IOError):
+                    continue
+
+            if font is None:
+                font = ImageFont.load_default()
+
+            # Center the text.
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            x = (184 - tw) // 2
+            y = (96 - th) // 2
+            draw.text((x, y), text, fill=(255, 255, 255), font=font)
+
+            screen_data = anki_vector.screen.convert_image_to_screen_data(img)
+            self._robot.screen.set_screen_with_image_data(
+                screen_data, duration_sec, interrupt_running=True
+            )
+
+        await asyncio.to_thread(_display)
+        log.info("vector.display_on_screen", text=text[:20])
+
     async def say(self, text: str) -> None:
         """Make Vector speak using his built-in TTS (fallback for Kokoro).
 
