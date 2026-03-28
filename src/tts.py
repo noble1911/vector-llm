@@ -373,14 +373,20 @@ class TTSClient:
 
         self._speaking = True
 
-        # Vector SDK needs a file path, so write to a temp file.
+        # Vector SDK needs a file path — use delete=False to avoid
+        # race where the file is removed before the SDK finishes reading.
         def _play():
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as f:
+            import os
+            f = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            try:
                 f.write(wav_data)
                 f.flush()
+                f.close()
                 self._vector.robot.audio.stream_wav_file(
                     f.name, volume=75
                 )
+            finally:
+                os.unlink(f.name)
 
         try:
             await asyncio.to_thread(_play)

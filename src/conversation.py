@@ -60,6 +60,7 @@ class ConversationManager:
         self._active = False
         self._last_spoke_at: float = 0.0
         self._last_interaction_at: float = 0.0
+        self._ignored_count: int = 0
 
         # Lock to prevent concurrent processing of transcriptions.
         self._processing_lock = asyncio.Lock()
@@ -296,8 +297,6 @@ class ConversationManager:
         if self._tts:
             try:
                 await self._tts.speak(text)
-            except NotImplementedError:
-                pass
             except Exception:
                 log.exception("tts.speak failed, falling back to vector")
                 if self._vector:

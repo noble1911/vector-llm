@@ -287,7 +287,7 @@ class Brain:
 
     async def _call_llm(
         self, *, tools: list[dict] | None = None
-    ) -> BrainResponse:
+    ) -> tuple[BrainResponse, float]:
         """Send the current context to the LLM and return a structured response."""
         messages = [
             ChatMessage(role="system", content=self._build_system_prompt()),

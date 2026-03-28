@@ -124,6 +124,7 @@ class MemoryStore:
             config.get("endpoints", {}).get("ollama", "http://localhost:11434")
         )
         self._user_id = db_cfg.get("user_id", VECTOR_USER_ID)
+        self._llm_model = config.get("models", {}).get("llm", "qwen3:8b")
 
     async def connect(self) -> None:
         """Create the connection pool and ensure Vector's user exists."""
@@ -178,10 +179,12 @@ class MemoryStore:
         return self._pool is not None
 
     async def close(self) -> None:
-        """Close the connection pool."""
+        """Close the connection pool and HTTP clients."""
         if self._pool:
             await self._pool.close()
             self._pool = None
+        if hasattr(self._embedding, "_client"):
+            await self._embedding._client.aclose()
 
     # --- Fact storage ---
 
@@ -470,7 +473,7 @@ class MemoryStore:
             resp = await client.post(
                 f"{url}/api/chat",
                 json={
-                    "model": "qwen2.5:7b",
+                    "model": self._llm_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
                     "options": {"num_predict": 256},

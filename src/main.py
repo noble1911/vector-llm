@@ -101,9 +101,11 @@ async def run(config: dict) -> None:
     ]
 
     # Monitor tasks — restart any that die unexpectedly.
+    shutdown_task = asyncio.create_task(shutdown.wait(), name="shutdown_waiter")
+
     while not shutdown.is_set():
         done, _ = await asyncio.wait(
-            tasks + [asyncio.create_task(shutdown.wait())],
+            tasks + [shutdown_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
 
@@ -111,7 +113,7 @@ async def run(config: dict) -> None:
             break
 
         for task in done:
-            if task.get_name() == "shutdown_waiter":
+            if task is shutdown_task:
                 continue
             name = task.get_name()
             exc = task.exception() if not task.cancelled() else None
