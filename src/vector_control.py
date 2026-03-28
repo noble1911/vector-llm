@@ -415,6 +415,10 @@ class VectorController:
                 await self.play_animation(name)
                 return f"Played animation: {name}"
 
+            elif tool_name == "dock":
+                await self.dock()
+                return "Successfully docked on charger"
+
             else:
                 return f"Unknown tool: {tool_name}"
 

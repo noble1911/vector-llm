@@ -118,6 +118,18 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "dock",
+            "description": "Drive back onto the charging dock. Vector will navigate to the charger automatically.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_butler",
             "description": "Escalate a question to Butler (Claude) for complex queries you can't handle.",
             "parameters": {
