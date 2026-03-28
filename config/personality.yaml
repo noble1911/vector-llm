@@ -41,7 +41,7 @@ personality:
 models:
   llm: qwen2.5:7b  # Text-only model with native tool calling
   vlm: qwen2.5vl:3b  # On-demand only, loaded when brain calls "look" tool
-  stt: tiny  # Whisper model size
+  stt: base.en  # English-only, 2x better than tiny with minimal latency cost
 
 vision:
   yolo_model: yolov8n.pt  # YOLOv8-nano for real-time object detection
