@@ -23,12 +23,12 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "float32"
 
-# VAD settings.
-VAD_CHUNK_MS = 30  # silero-vad works best on 30ms chunks
-VAD_CHUNK_SAMPLES = int(SAMPLE_RATE * VAD_CHUNK_MS / 1000)
+# VAD settings — silero-vad v5+ requires chunks >= 512 samples at 16kHz.
+VAD_CHUNK_MS = 32
+VAD_CHUNK_SAMPLES = 512
 
 # Speech segment assembly.
-MIN_SPEECH_MS = 300  # Ignore segments shorter than this
+MIN_SPEECH_MS = 1500  # Ignore segments shorter than this (Whisper hallucinates on short clips)
 MAX_SPEECH_MS = 30000  # Force-stop segments longer than this
 SILENCE_TIMEOUT_MS = 800  # End segment after this much silence
 
@@ -171,10 +171,33 @@ class STTListener:
                 language="en",
                 beam_size=1,
                 vad_filter=False,  # We already ran VAD.
+                condition_on_previous_text=False,  # Each segment is independent.
             )
-            return " ".join(seg.text.strip() for seg in segments).strip()
+            # Fully consume the generator to release internal buffers.
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+            return text
 
         return await asyncio.to_thread(_run)
+
+    async def _handle_segment(
+        self, segment: np.ndarray, conversation: ConversationManager
+    ) -> None:
+        """Transcribe a segment and forward to conversation (runs as background task)."""
+        try:
+            t0 = time.perf_counter()
+            text = await self._transcribe(segment)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+
+            if text:
+                log.info(
+                    "stt transcription",
+                    text=text[:80],
+                    audio_ms=int(len(segment) / SAMPLE_RATE * 1000),
+                    latency_ms=int(elapsed_ms),
+                )
+                await conversation.handle_transcription(text)
+        except Exception:
+            log.exception("stt transcription_error")
 
     async def listen(self, conversation: ConversationManager) -> None:
         """Main listening loop — capture audio, detect speech, transcribe, forward.
@@ -222,20 +245,15 @@ class STTListener:
                     peak = float(np.max(np.abs(chunk)))
                     log.info("stt audio_level", peak=f"{peak:.4f}", chunks=_audio_debug_counter)
 
-                segment = assemble_speech_segments(
-                    chunk, self._vad_check, state=vad_state
-                )
+                try:
+                    segment = assemble_speech_segments(
+                        chunk, self._vad_check, state=vad_state
+                    )
+                except Exception:
+                    log.exception("stt vad_error")
+                    continue
 
                 if segment is not None:
-                    t0 = time.perf_counter()
-                    text = await self._transcribe(segment)
-                    elapsed_ms = (time.perf_counter() - t0) * 1000
-
-                    if text:
-                        log.info(
-                            "stt transcription",
-                            text=text[:80],
-                            audio_ms=int(len(segment) / SAMPLE_RATE * 1000),
-                            latency_ms=int(elapsed_ms),
-                        )
-                        await conversation.handle_transcription(text)
+                    asyncio.create_task(
+                        self._handle_segment(segment, conversation)
+                    )
