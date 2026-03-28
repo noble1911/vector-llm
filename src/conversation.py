@@ -124,6 +124,11 @@ class ConversationManager:
     async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
         """Process a vision event and optionally respond.
 
+        Vision events get the scene context already injected into the system
+        prompt (including the last VLM description), so the brain should NOT
+        need to call 'look' again. We strip look calls to prevent the
+        look → speak → look infinite chain.
+
         Args:
             event_summary: Text summary of the vision event.
 
@@ -136,7 +141,14 @@ class ConversationManager:
             if response is None:
                 return None
 
-            # Execute any tool calls from the reaction.
+            # Strip 'look' tool calls from vision reactions — the brain
+            # already has scene context and doesn't need to look again.
+            if response.tool_calls:
+                response.tool_calls = [
+                    tc for tc in response.tool_calls if tc["name"] != "look"
+                ]
+
+            # Execute remaining tool calls (movement, animations, etc).
             response, spoke = await self._execute_tools(response)
 
             if response.speech and not spoke:

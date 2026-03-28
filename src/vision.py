@@ -49,7 +49,7 @@ class SceneState:
     last_description: str = ""  # From VLM, if available
 
     def summary(self) -> str:
-        """One-line summary for the brain's context."""
+        """Summary for the brain's context — includes last VLM description."""
         parts = []
         if self.objects:
             parts.append(f"objects: {', '.join(self.objects)}")
@@ -59,6 +59,8 @@ class SceneState:
             parts.append(f"motion: {self.motion_region or 'detected'}")
         else:
             parts.append("motion: none")
+        if self.last_description:
+            parts.append(f"scene: {self.last_description}")
         return " | ".join(parts) if parts else "no visual data"
 
 

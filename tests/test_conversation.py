@@ -407,16 +407,14 @@ class TestVisionEvents:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_vision_event_with_tool_calls(self):
+    async def test_vision_event_strips_look_calls(self):
+        """Vision events should NOT trigger look tool — prevents infinite chain."""
         brain = MagicMock()
         brain.handle_vision_event = AsyncMock(
             return_value=_make_brain_response(
                 "Interesting!",
                 [{"name": "look", "parameters": {}}],
             )
-        )
-        brain.handle_tool_result = AsyncMock(
-            return_value=_make_brain_response("I see a cat!")
         )
 
         vision = MagicMock()
@@ -431,7 +429,36 @@ class TestVisionEvents:
 
         await mgr.handle_vision_event("objects_changed: objects=['cat']")
 
-        vision.describe_scene.assert_called_once()
+        # look should have been stripped — scene context is already in the prompt.
+        vision.describe_scene.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_vision_event_allows_non_look_tools(self):
+        """Vision events can still trigger movement/animation tools."""
+        brain = MagicMock()
+        brain.handle_vision_event = AsyncMock(
+            return_value=_make_brain_response(
+                "Oh!",
+                [{"name": "play_animation", "parameters": {"name": "surprised"}}],
+            )
+        )
+        brain.handle_tool_result = AsyncMock(
+            return_value=_make_brain_response("Wow!")
+        )
+
+        vector = MagicMock()
+        vector.execute_tool = AsyncMock(return_value="Animation played")
+        vector.say = AsyncMock()
+
+        mgr = ConversationManager(
+            _make_config(), brain=brain, vector=vector
+        )
+
+        await mgr.handle_vision_event("objects_changed: objects=['cat']")
+
+        vector.execute_tool.assert_called_once_with(
+            "play_animation", {"name": "surprised"}
+        )
 
 
 class TestEndConversation:
