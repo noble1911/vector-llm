@@ -139,11 +139,11 @@ def render_icon(name: str) -> Image.Image:
     cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
 
     if name == "heart":
-        # Simple heart shape.
+        # Simple heart shape (flip y so point is at bottom).
         for y in range(SCREEN_HEIGHT):
             for x in range(SCREEN_WIDTH):
                 nx = (x - cx) / 35
-                ny = (y - cy + 10) / 35
+                ny = -(y - cy - 5) / 35
                 if (nx**2 + ny**2 - 1)**3 - nx**2 * ny**3 <= 0:
                     img.putpixel((x, y), (255, 50, 80))
 
