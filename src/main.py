@@ -35,7 +35,9 @@ async def run(config: dict) -> None:
     butler = ButlerClient(config)
     vector = VectorController(config)
     vision = VisionPipeline(config, vector=vector)
-    conversation = ConversationManager(config, brain=brain, tts=tts, butler=butler)
+    conversation = ConversationManager(
+        config, brain=brain, tts=tts, vector=vector, vision=vision
+    )
     behaviors = BehaviorEngine(config, vector=vector)
 
     # Wire up cross-references
@@ -58,6 +60,9 @@ async def run(config: dict) -> None:
     tasks = [
         asyncio.create_task(stt.listen(conversation), name="stt"),
         asyncio.create_task(vision.run(shutdown), name="vision"),
+        asyncio.create_task(
+            conversation.run_vision_event_loop(shutdown), name="vision_events"
+        ),
         asyncio.create_task(behaviors.run(shutdown), name="behaviors"),
     ]
 

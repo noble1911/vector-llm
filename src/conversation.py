@@ -1,24 +1,91 @@
-"""Dialogue manager — tracks conversation state and routes messages."""
+"""Dialogue manager — routes speech to the brain, executes actions, speaks responses.
+
+Orchestrates the full loop:
+  STT text → direction check → Brain → tool execution → TTS
+  Vision events → Brain → optional response → TTS
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+import re
+import time
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from src.brain import BrainResponse
+
 if TYPE_CHECKING:
     from src.brain import Brain
-    from src.butler_client import ButlerClient
     from src.tts import TTSClient
+    from src.vector_control import VectorController
+    from src.vision import VisionPipeline
 
 log = structlog.get_logger()
+
+# Patterns that indicate speech is directed at Vector.
+_DIRECT_ADDRESS_PATTERNS = [
+    re.compile(r"\bvector\b", re.IGNORECASE),
+    re.compile(r"\bhey robot\b", re.IGNORECASE),
+    re.compile(r"\blittle guy\b", re.IGNORECASE),
+    re.compile(r"\bhey buddy\b", re.IGNORECASE),
+]
+
+# Default follow-up window: if Vector spoke recently, assume next speech is for us.
+_DEFAULT_FOLLOWUP_WINDOW_S = 10.0
+
+# Maximum consecutive ignored transcriptions before auto-activating.
+# Prevents the manager from going completely silent if heuristics fail.
+_MAX_IGNORED_BEFORE_HINT = 5
+
+
+def is_directed_at_vector(
+    text: str,
+    *,
+    last_spoke_at: float,
+    now: float,
+    followup_window_s: float = _DEFAULT_FOLLOWUP_WINDOW_S,
+    is_active: bool = False,
+) -> bool:
+    """Determine if transcribed speech is directed at Vector.
+
+    Uses simple heuristics — no LLM call needed for this fast path:
+    1. Direct name mention ("Vector", "hey robot", etc.)
+    2. Conversation is already active (follow-up turn)
+    3. Within follow-up window of Vector's last speech
+
+    Args:
+        text: Transcribed speech text.
+        last_spoke_at: Timestamp of Vector's last speech (0 if never).
+        now: Current timestamp.
+        followup_window_s: Seconds after speaking to assume follow-up.
+        is_active: Whether a conversation is currently active.
+
+    Returns:
+        True if the speech appears to be for Vector.
+    """
+    # Direct address always counts.
+    for pattern in _DIRECT_ADDRESS_PATTERNS:
+        if pattern.search(text):
+            return True
+
+    # Active conversation — assume continuation.
+    if is_active:
+        return True
+
+    # Within follow-up window of last speech.
+    if last_spoke_at > 0 and (now - last_spoke_at) < followup_window_s:
+        return True
+
+    return False
 
 
 class ConversationManager:
     """Manages dialogue flow between the user, brain, and TTS.
 
     Decides whether speech is directed at Vector, maintains conversation
-    state, and handles escalation to Butler for complex queries.
+    state, and orchestrates the brain → tool → speech loop.
     """
 
     def __init__(
@@ -26,55 +93,251 @@ class ConversationManager:
         config: dict,
         *,
         brain: Brain,
-        tts: TTSClient,
-        butler: ButlerClient,
+        tts: TTSClient | None = None,
+        vector: VectorController | None = None,
+        vision: VisionPipeline | None = None,
     ) -> None:
-        self.timeout = config["thresholds"]["conversation_timeout_seconds"]
-        self.escalation_threshold = config["thresholds"]["escalation_confidence"]
+        thresholds = config.get("thresholds", {})
+        self.timeout_s: float = thresholds.get("conversation_timeout_seconds", 30.0)
+        self.followup_window_s: float = thresholds.get(
+            "followup_window_seconds", _DEFAULT_FOLLOWUP_WINDOW_S
+        )
+
         self._brain = brain
         self._tts = tts
-        self._butler = butler
-        self._active = False
+        self._vector = vector
+        self._vision = vision
 
-    async def handle_transcription(self, text: str) -> None:
+        self._active = False
+        self._last_spoke_at: float = 0.0
+        self._last_interaction_at: float = 0.0
+        self._ignored_count: int = 0
+
+        # Lock to prevent concurrent processing of transcriptions.
+        self._processing_lock = asyncio.Lock()
+
+    @property
+    def is_active(self) -> bool:
+        """Whether a conversation is currently active."""
+        return self._active
+
+    @property
+    def last_spoke_at(self) -> float:
+        """Timestamp of Vector's last speech."""
+        return self._last_spoke_at
+
+    async def handle_transcription(self, text: str) -> BrainResponse | None:
         """Process a new transcription from STT.
 
         Args:
             text: Transcribed speech text.
-        """
-        log.info("transcription received", text=text[:80])
-        raise NotImplementedError(
-            "ConversationManager.handle_transcription not yet implemented"
-        )
-
-    async def _is_directed_at_vector(self, text: str) -> bool:
-        """Determine if the speech is directed at Vector.
-
-        Args:
-            text: Transcribed text to evaluate.
 
         Returns:
-            True if the speech appears to be for Vector.
+            BrainResponse if Vector responds, None if speech was ignored.
         """
-        raise NotImplementedError(
-            "ConversationManager._is_directed_at_vector not yet implemented"
+        async with self._processing_lock:
+            return await self._handle_transcription_inner(text)
+
+    async def _handle_transcription_inner(self, text: str) -> BrainResponse | None:
+        now = time.monotonic()
+
+        # Check for conversation timeout.
+        if self._active and self._last_interaction_at > 0:
+            if (now - self._last_interaction_at) > self.timeout_s:
+                self._end_conversation()
+
+        directed = is_directed_at_vector(
+            text,
+            last_spoke_at=self._last_spoke_at,
+            now=now,
+            followup_window_s=self.followup_window_s,
+            is_active=self._active,
         )
 
-    async def _should_escalate(self, text: str) -> bool:
-        """Determine if the query should be escalated to Butler/Claude.
+        if not directed:
+            self._ignored_count += 1
+            log.debug(
+                "conversation.ignored",
+                text=text[:60],
+                ignored_count=self._ignored_count,
+            )
+            return None
+
+        # Activate conversation.
+        if not self._active:
+            self._active = True
+            log.info("conversation.started", trigger=text[:60])
+
+        self._ignored_count = 0
+        self._last_interaction_at = now
+
+        # Get brain response.
+        response = await self._brain.think(text)
+
+        # Execute tool calls and follow up.
+        response = await self._execute_tools(response)
+
+        # Speak the response.
+        if response.speech:
+            await self._speak(response.speech)
+
+        return response
+
+    async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
+        """Process a vision event and optionally respond.
 
         Args:
-            text: The user's query.
+            event_summary: Text summary of the vision event.
 
         Returns:
-            True if the query is too complex for the local LLM.
+            BrainResponse if Vector reacts, None if ignored.
         """
-        raise NotImplementedError(
-            "ConversationManager._should_escalate not yet implemented"
-        )
+        async with self._processing_lock:
+            response = await self._brain.handle_vision_event(event_summary)
 
-    def end_conversation(self) -> None:
+            if response is None:
+                return None
+
+            # Execute any tool calls from the reaction.
+            response = await self._execute_tools(response)
+
+            if response.speech:
+                await self._speak(response.speech)
+
+            return response
+
+    async def _execute_tools(self, response: BrainResponse) -> BrainResponse:
+        """Execute tool calls from a brain response and feed results back.
+
+        Processes tools sequentially — each result may trigger follow-up
+        tool calls from the brain.
+
+        Args:
+            response: Brain response potentially containing tool calls.
+
+        Returns:
+            Final BrainResponse after all tool chains are resolved.
+        """
+        max_rounds = 5  # Prevent infinite tool loops.
+        current = response
+
+        for _ in range(max_rounds):
+            if not current.tool_calls:
+                break
+
+            for tool_call in current.tool_calls:
+                tool_name = tool_call["name"]
+                params = tool_call.get("parameters", {})
+
+                result = await self._dispatch_tool(tool_name, params)
+
+                log.info(
+                    "conversation.tool_executed",
+                    tool=tool_name,
+                    result=result[:80],
+                )
+
+                # Feed result back to brain for follow-up.
+                current = await self._brain.handle_tool_result(tool_name, result)
+
+                # If follow-up has speech, speak it before next tool.
+                if current.speech:
+                    await self._speak(current.speech)
+
+        return current
+
+    async def _dispatch_tool(self, tool_name: str, params: dict) -> str:
+        """Dispatch a single tool call to the appropriate handler.
+
+        Args:
+            tool_name: Name of the tool to call.
+            params: Tool parameters.
+
+        Returns:
+            Result string for feeding back to the brain.
+        """
+        # "look" tool uses the vision pipeline.
+        if tool_name == "look":
+            if self._vision:
+                description = await self._vision.describe_scene()
+                return description
+            return "[no vision available]"
+
+        # All other tools go through VectorController.
+        if self._vector:
+            return await self._vector.execute_tool(tool_name, params)
+
+        return f"[{tool_name} unavailable — no vector controller]"
+
+    async def _speak(self, text: str) -> None:
+        """Speak text via TTS or fallback to Vector's built-in TTS.
+
+        Args:
+            text: Text to speak.
+        """
+        self._last_spoke_at = time.monotonic()
+
+        if self._tts:
+            try:
+                await self._tts.speak(text)
+                return
+            except NotImplementedError:
+                pass
+            except Exception:
+                log.exception("tts.speak failed, falling back to vector")
+
+        # Fallback to Vector's built-in TTS.
+        if self._vector:
+            try:
+                await self._vector.say(text)
+                return
+            except Exception:
+                log.exception("vector.say failed")
+
+        log.warning("conversation.no_tts_available", text=text[:60])
+
+    def _end_conversation(self) -> None:
         """End the current conversation and reset state."""
+        if not self._active:
+            return
         self._active = False
         self._brain.reset_context()
-        log.info("conversation ended")
+        log.info("conversation.ended")
+
+    def end_conversation(self) -> None:
+        """Public method to end the current conversation."""
+        self._end_conversation()
+
+    async def run_vision_event_loop(
+        self, shutdown: asyncio.Event
+    ) -> None:
+        """Continuously process vision events from the pipeline.
+
+        Args:
+            shutdown: Event that signals when to stop.
+        """
+        if not self._vision:
+            return
+
+        log.info("conversation.vision_event_loop started")
+
+        while not shutdown.is_set():
+            try:
+                # Wait for events with a timeout so we can check shutdown.
+                try:
+                    event = await asyncio.wait_for(
+                        self._vision.events.get(), timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                summary = (
+                    f"{event.event_type}: "
+                    f"{', '.join(f'{k}={v}' for k, v in event.data.items())}"
+                )
+                await self.handle_vision_event(summary)
+
+            except Exception:
+                log.exception("conversation.vision_event_loop error")
+
+        log.info("conversation.vision_event_loop stopped")
