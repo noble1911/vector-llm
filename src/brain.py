@@ -171,13 +171,12 @@ class Brain:
         parts = [self.system_prompt.strip()]
 
         # Inject remembered facts from persistent memory.
+        # NOTE: history injection disabled — it creates feedback loops where
+        # bad responses get stored, loaded, and copied by the model.
         if self._memory_context:
             facts_text = self._memory_context.facts_prompt()
             if facts_text:
                 parts.append(facts_text)
-            history_text = self._memory_context.history_prompt()
-            if history_text:
-                parts.append(history_text)
 
         # Inject current vision state (YOLO objects with positions + motion).
         if self._vision:
