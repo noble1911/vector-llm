@@ -1,3 +1,19 @@
+# NOTE: Ollama runs NATIVELY on the Mac Mini M4 (not in Docker)
+# to leverage Apple Metal GPU acceleration.
+#
+# Setup:
+#   - Installed at /Applications/Ollama.app
+#   - Auto-starts via ~/Library/LaunchAgents/com.ollama.server.plist
+#   - Accessible at http://localhost:11434
+#   - Models: qwen2.5:3b (text), qwen2.5-vl:3b (vision, on-demand)
+#
+# To manage:
+#   ollama list          # see loaded models
+#   ollama ps            # see running models
+#   ollama pull <model>  # download a model
+#
+# The docker-compose below is kept for reference / alternative deployments.
+
 services:
   ollama:
     image: ollama/ollama:latest
@@ -6,14 +22,8 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    # GPU passthrough — uncomment for Linux with NVIDIA GPU
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    profiles:
+      - docker-ollama  # Only starts with: docker compose --profile docker-ollama up
 
 volumes:
   ollama_data:
