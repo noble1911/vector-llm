@@ -248,18 +248,11 @@ class VectorController:
         self._ensure_connected()
 
         def _display():
-            import time as _time
             import anki_vector.screen
-            import anki_vector.color
 
             screen_data = anki_vector.screen.convert_image_to_screen_data(image)
             self._robot.screen.set_screen_with_image_data(
                 screen_data, duration_sec, interrupt_running=True
-            )
-            _time.sleep(duration_sec)
-            # Flash black to hand control back to the default face.
-            self._robot.screen.set_screen_to_color(
-                anki_vector.color.Color(rgb=[0, 0, 0]), duration_sec=0.1
             )
 
         await asyncio.to_thread(_display)
