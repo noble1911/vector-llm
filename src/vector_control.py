@@ -267,9 +267,13 @@ class VectorController:
             self._robot.screen.set_screen_with_image_data(
                 screen_data, duration_sec, interrupt_running=True
             )
-            # Wait then trigger an animation to restore the default face.
+            # Wait then clear the screen by showing a very short black frame.
+            # The SDK will restore the default animated face automatically after.
             _time.sleep(duration_sec)
-            self._robot.anim.play_animation_trigger("ObservingIdleEyesOnly")
+            import anki_vector.color
+            self._robot.screen.set_screen_to_color(
+                anki_vector.color.Color(rgb=[0, 0, 0]), duration_sec=0.1
+            )
 
         await asyncio.to_thread(_display)
         log.info("vector.display_on_screen", text=text[:20])
