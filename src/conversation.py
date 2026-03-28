@@ -290,15 +290,7 @@ class ConversationManager:
         Args:
             text: Text to speak (may contain emoji).
         """
-        from src.screen import extract_emoji, render_emoji
-
         self._last_spoke_at = time.monotonic()
-
-        # Extract emoji for screen display.
-        _, emojis = extract_emoji(text)
-        if emojis and self._vector:
-            img = render_emoji(emojis)
-            asyncio.create_task(self._vector.display_on_screen(img, duration_sec=2.0))
 
         if self._tts:
             try:
