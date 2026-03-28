@@ -209,11 +209,18 @@ class STTListener:
         )
 
         vad_state: dict = {}
+        _audio_debug_counter = 0
 
         with stream:
             log.info("stt listening", device=self._device_index or "default")
             while True:
                 chunk = await audio_queue.get()
+
+                # Log audio level periodically to confirm mic is working.
+                _audio_debug_counter += 1
+                if _audio_debug_counter % 200 == 1:  # Every ~6 seconds
+                    peak = float(np.max(np.abs(chunk)))
+                    log.info("stt audio_level", peak=f"{peak:.4f}", chunks=_audio_debug_counter)
 
                 segment = assemble_speech_segments(
                     chunk, self._vad_check, state=vad_state
