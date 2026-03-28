@@ -154,6 +154,7 @@ class Brain:
         self._client = client or OllamaClient(config["endpoints"]["ollama"])
         self._context: list[ChatMessage] = []
         self._recent_speeches: list[str] = []  # Track recent outputs for repetition detection.
+        self._active_tools: list[dict] = CHAT_TOOLS  # Currently selected tool set.
         self._vision: VisionPipeline | None = None
         self._memory_context: MemoryContext | None = None
 
@@ -237,6 +238,7 @@ class Brain:
         # Pick tools based on what the user is asking for.
         words = set(user_message.lower().split())
         tools = ACTION_TOOLS if words & _ACTION_KEYWORDS else CHAT_TOOLS
+        self._active_tools = tools
 
         result, duration_ms = await self._call_llm(tools=tools)
 
@@ -245,7 +247,7 @@ class Brain:
             log.warning("brain.repetition_detected", speech=result.speech[:40])
             self._context.clear()
             self._context.append(ChatMessage(role="user", content=user_message))
-            result, duration_ms = await self._call_llm(tools=TOOLS)
+            result, duration_ms = await self._call_llm(tools=tools)
 
         # Track recent speeches (keep last 5).
         if result.speech:
@@ -278,7 +280,7 @@ class Brain:
             name=tool_name,
         ))
 
-        parsed, duration_ms = await self._call_llm(tools=TOOLS)
+        parsed, duration_ms = await self._call_llm(tools=self._active_tools)
 
         log.info(
             "brain.handle_tool_result",
@@ -290,12 +292,14 @@ class Brain:
         return parsed
 
     async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
-        """React to a vision event — kept lightweight, no tools."""
-        prompt = f"[vision event] {event_summary}"
+        """React to a vision event — can look and remember."""
+        prompt = (
+            f"[vision event] {event_summary}\n"
+            "React briefly if interesting. Say NOTHING if not."
+        )
         self._context.append(ChatMessage(role="user", content=prompt))
 
-        # No tools for vision events — just speak or stay quiet.
-        result, duration_ms = await self._call_llm(tools=None)
+        result, duration_ms = await self._call_llm(tools=CHAT_TOOLS)
 
         # Filter out non-responses — model should say NOTHING if not noteworthy.
         if not result.speech or "nothing" in result.speech.lower().strip("., !"):

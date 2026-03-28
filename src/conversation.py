@@ -1,15 +1,15 @@
 """Dialogue manager — routes speech to the brain, executes actions, speaks responses.
 
-Orchestrates the full loop:
-  STT text → direction check → Brain → tool execution → TTS
-  Vision events → Brain → optional response → TTS
+Simplified for the state machine architecture:
+  STT text → Brain (with contextual tools) → tool execution → TTS
+  State machine handles control acquire/release.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -25,16 +25,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
-# Default follow-up window (kept for timeout logic).
-_DEFAULT_FOLLOWUP_WINDOW_S = 10.0
-
 
 class ConversationManager:
-    """Manages dialogue flow between the user, brain, and TTS.
-
-    Decides whether speech is directed at Vector, maintains conversation
-    state, and orchestrates the brain → tool → speech loop.
-    """
+    """Manages dialogue flow between the user, brain, and TTS."""
 
     def __init__(
         self,
@@ -47,9 +40,6 @@ class ConversationManager:
         butler: ButlerClient | None = None,
         memory: MemoryStore | None = None,
     ) -> None:
-        thresholds = config.get("thresholds", {})
-        self.timeout_s: float = thresholds.get("conversation_timeout_seconds", 30.0)
-
         self._brain = brain
         self._tts = tts
         self._vector = vector
@@ -59,123 +49,69 @@ class ConversationManager:
 
         self._active = False
         self._last_spoke_at: float = 0.0
-        self._last_interaction_at: float = 0.0
-        self._ignored_count: int = 0
 
         # Lock to prevent concurrent processing of transcriptions.
         self._processing_lock = asyncio.Lock()
 
     @property
     def is_active(self) -> bool:
-        """Whether a conversation is currently active."""
         return self._active
 
     @property
     def last_spoke_at(self) -> float:
-        """Timestamp of Vector's last speech."""
         return self._last_spoke_at
 
     async def handle_transcription(
         self, text: str, *, timestamp: float = 0.0
     ) -> BrainResponse | None:
-        """Process a new transcription from STT.
-
-        Args:
-            text: Transcribed speech text.
-            timestamp: perf_counter timestamp when the audio was captured.
-
-        Returns:
-            BrainResponse if Vector responds, None if speech was ignored.
-        """
+        """Process a new transcription from STT."""
         async with self._processing_lock:
-            # Drop transcriptions that waited too long for the lock.
+            # Drop stale transcriptions.
             if timestamp and (time.perf_counter() - timestamp) > 10.0:
                 age = time.perf_counter() - timestamp
                 log.info("conversation.dropped_stale", age_s=f"{age:.1f}", text=text[:40])
                 return None
-            return await self._handle_transcription_inner(text)
 
-    async def _handle_transcription_inner(self, text: str) -> BrainResponse | None:
-        now = time.monotonic()
+            if not self._active:
+                self._active = True
+                log.info("conversation.started", trigger=text[:60])
 
-        # Check for conversation timeout — reset context after long silence.
-        if self._active and self._last_interaction_at > 0:
-            if (now - self._last_interaction_at) > self.timeout_s:
-                self._end_conversation()
+            # Load memory context.
+            await self._load_memory_context(text)
 
-        # Always-on: every transcription is treated as directed at us.
-        if not self._active:
-            self._active = True
-            log.info("conversation.started", trigger=text[:60])
+            # Get brain response.
+            response = await self._brain.think(text)
 
-        self._ignored_count = 0
-        self._last_interaction_at = now
+            # Speak the initial response.
+            if response.speech:
+                await self._speak(response.speech)
 
-        # Load memory context before brain call.
-        await self._load_memory_context(text)
+            # Execute tool calls.
+            response, _spoke = await self._execute_tools(response)
 
-        # Get brain response.
-        response = await self._brain.think(text)
+            # Persist history in background.
+            speech = response.speech or (response.speech if _spoke else "")
+            if self._memory and speech:
+                asyncio.create_task(self._persist_history(text, speech))
 
-        # Speak the initial response before executing any tools.
-        if response.speech:
-            await self._speak(response.speech)
+            return response
 
-        # Execute tool calls and follow up (tool results may produce more speech).
-        response, _spoke = await self._execute_tools(response)
-
-        # Store conversation history in background (no auto_learn — brain uses remember tool).
-        if self._memory and response.speech:
-            asyncio.create_task(self._persist_history(text, response.speech))
-
-        return response
-
-    async def awareness_tick(self) -> BrainResponse | None:
-        """Periodic check — let the brain react to accumulated vision context.
-
-        Called when NOT in conversation. The brain already has scene state
-        in its system prompt; this just gives it a chance to initiate.
-
-        Returns:
-            BrainResponse if the brain wants to say something, None otherwise.
-        """
+    async def handle_learning(self, event_summary: str) -> BrainResponse | None:
+        """React to something interesting — brief, may comment."""
         async with self._processing_lock:
-            response = await self._brain.handle_vision_event(
-                "Glance at your surroundings. You must respond with ONLY "
-                "one of these two options:\n"
-                "1. If a NEW person just arrived or left: greet them briefly.\n"
-                "2. Otherwise: respond with exactly the word NOTHING.\n"
-                "Do NOT describe the scene. Do NOT narrate what you see."
-            )
+            response = await self._brain.handle_vision_event(event_summary)
 
             if response is None:
                 return None
 
-            # Strip look calls — brain already has scene context.
-            if response.tool_calls:
-                response.tool_calls = [
-                    tc for tc in response.tool_calls if tc["name"] != "look"
-                ]
-
             if response.speech:
                 await self._speak(response.speech)
 
-            response, _spoke = await self._execute_tools(response)
             return response
 
     async def _execute_tools(self, response: BrainResponse) -> tuple[BrainResponse, bool]:
-        """Execute tool calls from a brain response and feed results back.
-
-        Processes tools sequentially — each result may trigger follow-up
-        tool calls from the brain.
-
-        Args:
-            response: Brain response potentially containing tool calls.
-
-        Returns:
-            Tuple of (final BrainResponse, whether speech was already spoken).
-        """
-        max_rounds = 2  # Keep tool chains short to stay responsive.
+        """Execute tool calls, max 2 rounds."""
+        max_rounds = 2
         current = response
         spoke = False
         look_used = False
@@ -188,7 +124,6 @@ class ConversationManager:
                 tool_name = tool_call["name"]
                 params = tool_call.get("parameters", {})
 
-                # Only allow one look per response chain.
                 if tool_name == "look":
                     if look_used:
                         continue
@@ -202,16 +137,13 @@ class ConversationManager:
                     result=result[:80],
                 )
 
-                # Feed result back to brain for follow-up.
                 current = await self._brain.handle_tool_result(tool_name, result)
 
-                # Strip any further look calls from follow-up.
                 if current.tool_calls:
                     current.tool_calls = [
                         tc for tc in current.tool_calls if tc["name"] != "look"
                     ]
 
-                # If follow-up has speech, speak it before next tool.
                 if current.speech:
                     await self._speak(current.speech)
                     spoke = True
@@ -219,23 +151,12 @@ class ConversationManager:
         return current, spoke
 
     async def _dispatch_tool(self, tool_name: str, params: dict) -> str:
-        """Dispatch a single tool call to the appropriate handler.
-
-        Args:
-            tool_name: Name of the tool to call.
-            params: Tool parameters.
-
-        Returns:
-            Result string for feeding back to the brain.
-        """
-        # "look" tool uses the vision pipeline.
+        """Route tool calls to the appropriate handler."""
         if tool_name == "look":
             if self._vision:
-                description = await self._vision.describe_scene()
-                return description
+                return await self._vision.describe_scene()
             return "[no vision available]"
 
-        # "remember" stores a fact in persistent memory.
         if tool_name == "remember":
             fact = params.get("fact", "")
             category = params.get("category", "other")
@@ -244,54 +165,32 @@ class ConversationManager:
                 return f"Remembered: {fact}"
             return "[memory not available]"
 
-        # "recall" searches persistent memory.
         if tool_name == "recall":
             query = params.get("query", "")
             if self._memory and self._memory.available:
                 facts = await self._memory.recall(query, limit=5)
                 if facts:
                     return "\n".join(f"- [{f['category']}] {f['fact']}" for f in facts)
-                return "No memories found for that query."
+                return "No memories found."
             return "[memory not available]"
 
-        # "show_on_screen" displays content on Vector's face.
-        # We store the image and display it after TTS finishes to avoid collision.
-        if tool_name == "show_on_screen":
-            from src.screen import render_text, render_color, render_icon
-            display_type = params.get("type", "text")
-            content = params.get("content", "")
-            if display_type == "icon":
-                img = render_icon(content)
-            elif display_type == "color":
-                img = render_color(content)
-            else:
-                img = render_text(content)
-            self._pending_screen_image = img
-            return f"Showing {display_type}: {content}"
-
-        # "ask_butler" escalates to Claude via Butler API.
         if tool_name == "ask_butler":
             question = params.get("question", "")
             if self._butler:
                 try:
                     return await self._butler.ask(question)
                 except Exception as e:
-                    log.warning("butler.escalation_failed", error=str(e))
                     return f"[Butler unavailable: {e}]"
             return "[Butler not configured]"
 
-        # All other tools go through VectorController.
+        # Physical tools go through VectorController.
         if self._vector:
             return await self._vector.execute_tool(tool_name, params)
 
-        return f"[{tool_name} unavailable — no vector controller]"
+        return f"[{tool_name} unavailable]"
 
     async def _speak(self, text: str) -> None:
-        """Speak text via TTS, then show any pending screen image.
-
-        Args:
-            text: Text to speak (may contain emoji which are stripped by TTS).
-        """
+        """Speak text via TTS."""
         self._last_spoke_at = time.monotonic()
 
         if self._tts:
@@ -306,7 +205,7 @@ class ConversationManager:
                         log.exception("vector.say failed")
 
     async def _load_memory_context(self, text: str) -> None:
-        """Load relevant memories and inject into the brain's system prompt."""
+        """Load relevant memories into the brain's system prompt."""
         if not self._memory or not self._memory.available:
             return
         try:
@@ -316,7 +215,7 @@ class ConversationManager:
             log.exception("memory.load_context_failed")
 
     async def _persist_history(self, user_text: str, assistant_text: str) -> None:
-        """Store conversation messages in Postgres (background task)."""
+        """Store conversation messages in Postgres."""
         if not self._memory:
             return
         try:
@@ -325,68 +224,10 @@ class ConversationManager:
         except Exception:
             log.exception("memory.persist_failed")
 
-    def _end_conversation(self) -> None:
-        """End the current conversation and reset state."""
+    def end_conversation(self) -> None:
+        """End the current conversation and reset brain context."""
         if not self._active:
             return
         self._active = False
         self._brain.reset_context()
         log.info("conversation.ended")
-
-    def end_conversation(self) -> None:
-        """Public method to end the current conversation."""
-        self._end_conversation()
-
-    async def run_vision_event_loop(
-        self, shutdown: asyncio.Event
-    ) -> None:
-        """Drain vision events (scene state updates silently) and do periodic awareness ticks.
-
-        Vision events update scene state in the VisionPipeline automatically.
-        This loop just drains the queue so it doesn't fill up, and periodically
-        gives the brain a chance to react to the scene — but only when not
-        in conversation.
-
-        Args:
-            shutdown: Event that signals when to stop.
-        """
-        if not self._vision:
-            return
-
-        log.info("conversation.vision_event_loop started")
-
-        awareness_interval_s = 60.0
-        last_awareness_at = time.monotonic()
-
-        while not shutdown.is_set():
-            try:
-                # Drain events from the queue (scene state is already updated).
-                try:
-                    await asyncio.wait_for(
-                        self._vision.events.get(), timeout=1.0
-                    )
-                except asyncio.TimeoutError:
-                    pass
-
-                # Check for conversation timeout.
-                now = time.monotonic()
-                if (
-                    self._active
-                    and self._last_interaction_at > 0
-                    and (now - self._last_interaction_at) > self.timeout_s
-                ):
-                    self._end_conversation()
-
-                # Periodic awareness tick — only when idle.
-                if (
-                    not self._active
-                    and (now - last_awareness_at) >= awareness_interval_s
-                ):
-                    last_awareness_at = now
-                    log.info("awareness_tick")
-                    await self.awareness_tick()
-
-            except Exception:
-                log.exception("conversation.vision_event_loop error")
-
-        log.info("conversation.vision_event_loop stopped")

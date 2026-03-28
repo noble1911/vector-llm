@@ -1,4 +1,10 @@
-"""Entry point — starts all async loops with auto-recovery on failure."""
+"""Entry point — state machine architecture with auto-recovery.
+
+States:
+  EXPLORING  — firmware controls Vector, we passively observe
+  CONVERSING — we hold control, brain responds to speech
+  LEARNING   — brief control to look at something interesting
+"""
 
 import asyncio
 import logging
@@ -10,8 +16,8 @@ import yaml
 from src.brain import Brain
 from src.butler_client import ButlerClient
 from src.conversation import ConversationManager
-from src.behaviors import BehaviorEngine
 from src.memory import MemoryStore
+from src.state_machine import State, StateMachine
 from src.stt import STTListener
 from src.tts import TTSClient
 from src.vector_control import VectorController
@@ -19,19 +25,17 @@ from src.vision import VisionPipeline
 
 log = structlog.get_logger()
 
-# Retry settings for Vector connection.
 _MAX_CONNECT_RETRIES = 10
 _CONNECT_RETRY_DELAY_S = 15
 
 
 def load_config(path: str = "config/personality.yaml") -> dict:
-    """Load configuration from YAML file."""
     with open(path) as f:
         return yaml.safe_load(f)
 
 
 async def connect_with_retry(vector: VectorController) -> None:
-    """Connect to Vector with retries — handles reboots and docking."""
+    """Connect to Vector with retries."""
     for attempt in range(1, _MAX_CONNECT_RETRIES + 1):
         try:
             await vector.connect()
@@ -39,17 +43,12 @@ async def connect_with_retry(vector: VectorController) -> None:
         except Exception as e:
             if attempt == _MAX_CONNECT_RETRIES:
                 raise
-            log.warning(
-                "vector.connect_retry",
-                attempt=attempt,
-                max=_MAX_CONNECT_RETRIES,
-                error=str(e)[:80],
-            )
+            log.warning("vector.connect_retry", attempt=attempt, error=str(e)[:80])
             await asyncio.sleep(_CONNECT_RETRY_DELAY_S)
 
 
 async def run(config: dict) -> None:
-    """Initialize all components and run the main loop."""
+    """Initialize components and run the state machine."""
     log.info("initializing components")
 
     brain = Brain(config)
@@ -59,7 +58,6 @@ async def run(config: dict) -> None:
     stt = STTListener(config, tts=tts)
     vision = VisionPipeline(config, vector=vector)
 
-    # Persistent memory (optional — gracefully degrades if Postgres unavailable).
     memory = MemoryStore(config)
     await memory.connect()
 
@@ -72,12 +70,16 @@ async def run(config: dict) -> None:
         butler=butler,
         memory=memory,
     )
-    behaviors = BehaviorEngine(config, vector=vector, conversation=conversation)
 
-    # Wire up cross-references
     brain.set_vision(vision)
 
     await connect_with_retry(vector)
+
+    sm = StateMachine(
+        vector=vector,
+        conversation=conversation,
+        vision=vision,
+    )
 
     shutdown = asyncio.Event()
 
@@ -91,16 +93,60 @@ async def run(config: dict) -> None:
 
     log.info("starting main loop")
 
+    # STT callback — transitions to CONVERSING and handles transcription.
+    async def on_transcription(text: str, timestamp: float) -> None:
+        if sm.state != State.CONVERSING:
+            await sm.transition_to(State.CONVERSING)
+        sm.touch_interaction()
+        await conversation.handle_transcription(text, timestamp=timestamp)
+
+    # Vision event callback — triggers LEARNING on significant changes.
+    _learning_in_progress = False
+
+    async def on_scene_change(event_summary: str) -> None:
+        nonlocal _learning_in_progress
+        if sm.state == State.CONVERSING or not sm.can_learn() or _learning_in_progress:
+            return
+        _learning_in_progress = True
+        try:
+            await sm.transition_to(State.LEARNING)
+            await conversation.handle_learning(event_summary)
+            await sm.transition_to(State.EXPLORING)
+        finally:
+            _learning_in_progress = False
+
+    # Vision event drain loop.
+    async def vision_event_loop() -> None:
+        if not vision:
+            return
+        while not shutdown.is_set():
+            try:
+                try:
+                    event = await asyncio.wait_for(
+                        vision.events.get(), timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                summary = (
+                    f"{event.event_type}: "
+                    f"{', '.join(f'{k}={v}' for k, v in event.data.items())}"
+                )
+                asyncio.create_task(on_scene_change(summary))
+
+            except Exception:
+                log.exception("vision_event_loop error")
+
     tasks = [
-        asyncio.create_task(stt.listen(conversation), name="stt"),
-        asyncio.create_task(vision.run(shutdown), name="vision"),
         asyncio.create_task(
-            conversation.run_vision_event_loop(shutdown), name="vision_events"
+            stt.listen_with_callback(on_transcription), name="stt"
         ),
-        asyncio.create_task(behaviors.run(shutdown), name="behaviors"),
+        asyncio.create_task(vision.run(shutdown), name="vision"),
+        asyncio.create_task(vision_event_loop(), name="vision_events"),
+        asyncio.create_task(sm.run(shutdown), name="state_machine"),
     ]
 
-    # Monitor tasks — restart any that die unexpectedly.
+    # Monitor tasks — restart on crash.
     shutdown_task = asyncio.create_task(shutdown.wait(), name="shutdown_waiter")
 
     while not shutdown.is_set():
@@ -120,7 +166,6 @@ async def run(config: dict) -> None:
             if exc:
                 log.error("task_crashed", task=name, error=str(exc)[:100])
 
-                # Attempt to reconnect if it was a Vector connection issue.
                 if "Vector" in str(exc) or "grpc" in str(exc).lower():
                     log.info("attempting_reconnect", task=name)
                     try:
@@ -129,42 +174,37 @@ async def run(config: dict) -> None:
                         pass
                     try:
                         await connect_with_retry(vector)
-                        if name == "vision":
-                            await vector.start_camera_feed()
                     except Exception as e:
                         log.error("reconnect_failed", error=str(e)[:80])
                         shutdown.set()
                         break
 
-                # Restart the crashed task.
                 log.info("task_restarting", task=name)
                 if name == "stt":
-                    new_task = asyncio.create_task(stt.listen(conversation), name="stt")
+                    new_task = asyncio.create_task(
+                        stt.listen_with_callback(on_transcription), name="stt"
+                    )
                 elif name == "vision":
                     new_task = asyncio.create_task(vision.run(shutdown), name="vision")
                 elif name == "vision_events":
-                    new_task = asyncio.create_task(
-                        conversation.run_vision_event_loop(shutdown), name="vision_events"
-                    )
-                elif name == "behaviors":
-                    new_task = asyncio.create_task(behaviors.run(shutdown), name="behaviors")
+                    new_task = asyncio.create_task(vision_event_loop(), name="vision_events")
+                elif name == "state_machine":
+                    new_task = asyncio.create_task(sm.run(shutdown), name="state_machine")
                 else:
                     continue
 
                 tasks = [t for t in tasks if t is not task] + [new_task]
 
     log.info("shutting down")
-
+    shutdown_task.cancel()
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
-
     await memory.close()
     log.info("shutdown complete")
 
 
 def main() -> None:
-    """Configure logging and start the async runtime."""
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
     )

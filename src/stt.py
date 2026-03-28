@@ -189,9 +189,9 @@ class STTListener:
         return await asyncio.to_thread(_run)
 
     async def _handle_segment(
-        self, segment: np.ndarray, conversation: ConversationManager
+        self, segment: np.ndarray, callback: Any
     ) -> None:
-        """Transcribe a segment and forward to conversation (runs as background task)."""
+        """Transcribe a segment and forward via callback (runs as background task)."""
         try:
             t0 = time.perf_counter()
             text = await self._transcribe(segment)
@@ -204,15 +204,15 @@ class STTListener:
                     audio_ms=int(len(segment) / SAMPLE_RATE * 1000),
                     latency_ms=int(elapsed_ms),
                 )
-                await conversation.handle_transcription(text, timestamp=t0)
+                await callback(text, t0)
         except Exception:
             log.exception("stt transcription_error")
 
-    async def listen(self, conversation: ConversationManager) -> None:
+    async def listen_with_callback(self, callback: Any) -> None:
         """Main listening loop — capture audio, detect speech, transcribe, forward.
 
         Args:
-            conversation: The ConversationManager to send transcriptions to.
+            callback: Async function(text, timestamp) called for each transcription.
         """
         log.info("stt listener starting", model=self.model_size)
 
@@ -273,5 +273,5 @@ class STTListener:
 
                 if segment is not None:
                     asyncio.create_task(
-                        self._handle_segment(segment, conversation)
+                        self._handle_segment(segment, callback)
                     )
