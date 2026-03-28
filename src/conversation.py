@@ -19,6 +19,7 @@ from src.brain import BrainResponse
 if TYPE_CHECKING:
     from src.brain import Brain
     from src.butler_client import ButlerClient
+    from src.memory import MemoryStore
     from src.tts import TTSClient
     from src.vector_control import VectorController
     from src.vision import VisionPipeline
@@ -98,6 +99,7 @@ class ConversationManager:
         vector: VectorController | None = None,
         vision: VisionPipeline | None = None,
         butler: ButlerClient | None = None,
+        memory: MemoryStore | None = None,
     ) -> None:
         thresholds = config.get("thresholds", {})
         self.timeout_s: float = thresholds.get("conversation_timeout_seconds", 30.0)
@@ -110,6 +112,7 @@ class ConversationManager:
         self._vector = vector
         self._vision = vision
         self._butler = butler
+        self._memory = memory
 
         self._active = False
         self._last_spoke_at: float = 0.0
@@ -174,6 +177,9 @@ class ConversationManager:
         self._ignored_count = 0
         self._last_interaction_at = now
 
+        # Load memory context before brain call.
+        await self._load_memory_context(text)
+
         # Get brain response.
         response = await self._brain.think(text)
 
@@ -183,6 +189,10 @@ class ConversationManager:
         # Speak the response (skip if tool chain already spoke it).
         if response.speech and not spoke:
             await self._speak(response.speech)
+
+        # Store conversation and auto-learn in background.
+        if self._memory and response.speech:
+            asyncio.create_task(self._persist_exchange(text, response.speech))
 
         return response
 
@@ -311,6 +321,27 @@ class ConversationManager:
                 log.exception("vector.say failed")
 
         log.warning("conversation.no_tts_available", text=text[:60])
+
+    async def _load_memory_context(self, text: str) -> None:
+        """Load relevant memories and inject into the brain's system prompt."""
+        if not self._memory or not self._memory.available:
+            return
+        try:
+            ctx = await self._memory.load_context(current_message=text)
+            self._brain.set_memory_context(ctx)
+        except Exception:
+            log.exception("memory.load_context_failed")
+
+    async def _persist_exchange(self, user_text: str, assistant_text: str) -> None:
+        """Store conversation messages and auto-learn facts (background task)."""
+        if not self._memory:
+            return
+        try:
+            await self._memory.store_message("user", user_text)
+            await self._memory.store_message("assistant", assistant_text)
+            await self._memory.auto_learn(user_text, assistant_text)
+        except Exception:
+            log.exception("memory.persist_failed")
 
     def _end_conversation(self) -> None:
         """End the current conversation and reset state."""

@@ -11,6 +11,7 @@ from src.brain import Brain
 from src.butler_client import ButlerClient
 from src.conversation import ConversationManager
 from src.behaviors import BehaviorEngine
+from src.memory import MemoryStore
 from src.stt import STTListener
 from src.tts import TTSClient
 from src.vector_control import VectorController
@@ -35,8 +36,19 @@ async def run(config: dict) -> None:
     vector = VectorController(config)
     tts = TTSClient(config, vector=vector)
     vision = VisionPipeline(config, vector=vector)
+
+    # Persistent memory (optional — gracefully degrades if Postgres unavailable).
+    memory = MemoryStore(config)
+    await memory.connect()
+
     conversation = ConversationManager(
-        config, brain=brain, tts=tts, vector=vector, vision=vision, butler=butler
+        config,
+        brain=brain,
+        tts=tts,
+        vector=vector,
+        vision=vision,
+        butler=butler,
+        memory=memory,
     )
     behaviors = BehaviorEngine(config, vector=vector, conversation=conversation)
 
@@ -73,6 +85,7 @@ async def run(config: dict) -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
+    await memory.close()
     log.info("shutdown complete")
 
 

@@ -44,6 +44,10 @@ thresholds:
   conversation_timeout_seconds: 30.0  # Silence before ending a conversation
   escalation_confidence: 0.3  # Below this, escalate to Butler/Claude
 
+database:
+  url: postgresql://postgres:postgres@localhost:5432/immich
+  user_id: vector-robot  # Vector's identity in butler.users
+
 endpoints:
   ollama: http://localhost:11434
   kokoro_tts: http://localhost:8880

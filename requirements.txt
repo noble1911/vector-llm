@@ -22,6 +22,9 @@ protobuf<4  # SDK's generated protobuf files require v3.x
 # Async HTTP (Kokoro TTS, Butler API, Ollama)
 httpx>=0.27.0
 
+# Database (persistent memory via Postgres+pgvector)
+asyncpg>=0.29.0
+
 # Config
 pyyaml>=6.0
 

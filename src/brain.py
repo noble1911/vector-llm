@@ -12,6 +12,7 @@ import structlog
 from src.ollama_client import ChatMessage, OllamaClient
 
 if TYPE_CHECKING:
+    from src.memory import MemoryContext
     from src.vision import VisionPipeline
 
 log = structlog.get_logger()
@@ -154,14 +155,25 @@ class Brain:
         self._client = client or OllamaClient(config["endpoints"]["ollama"])
         self._context: list[ChatMessage] = []
         self._vision: VisionPipeline | None = None
+        self._memory_context: MemoryContext | None = None
 
     def set_vision(self, vision: VisionPipeline) -> None:
         """Connect the vision pipeline so the brain can read scene state."""
         self._vision = vision
 
+    def set_memory_context(self, ctx: MemoryContext | None) -> None:
+        """Update the memory context for the next brain call."""
+        self._memory_context = ctx
+
     def _build_system_prompt(self) -> str:
-        """Build the full system prompt including vision context and tools."""
+        """Build the full system prompt including memory, vision context, and tools."""
         parts = [self.system_prompt.strip()]
+
+        # Inject remembered facts from persistent memory.
+        if self._memory_context:
+            facts_text = self._memory_context.facts_prompt()
+            if facts_text:
+                parts.append(facts_text)
 
         # Inject current vision state
         if self._vision:
