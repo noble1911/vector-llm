@@ -368,7 +368,7 @@ class ConversationManager:
         log.info("conversation.vision_event_loop started")
 
         awareness_interval_s = 60.0
-        vlm_snapshot_interval_s = 10.0  # VLM takes ~8s, so this runs nearly back-to-back
+        vlm_snapshot_interval_s = 30.0
         last_awareness_at = time.monotonic()
         last_vlm_snapshot_at = time.monotonic()
 
