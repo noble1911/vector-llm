@@ -190,8 +190,21 @@ class ConversationManager:
         return f"[{tool_name} unavailable]"
 
     async def _speak(self, text: str) -> None:
-        """Speak text via TTS."""
+        """Speak text via TTS, show emoji on screen briefly."""
+        from src.screen import extract_emoji, render_emoji
+
         self._last_spoke_at = time.monotonic()
+
+        # Extract emoji before TTS.
+        _, emojis = extract_emoji(text)
+
+        # Show emoji on screen briefly (before TTS so it appears while speaking).
+        if emojis and self._vector:
+            try:
+                img = render_emoji(emojis)
+                await self._vector.display_on_screen(img, duration_sec=1.0)
+            except Exception:
+                pass  # Screen display is best-effort.
 
         if self._tts:
             try:
