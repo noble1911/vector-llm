@@ -178,10 +178,10 @@ class ConversationManager:
         response = await self._brain.think(text)
 
         # Execute tool calls and follow up.
-        response = await self._execute_tools(response)
+        response, spoke = await self._execute_tools(response)
 
-        # Speak the response.
-        if response.speech:
+        # Speak the response (skip if tool chain already spoke it).
+        if response.speech and not spoke:
             await self._speak(response.speech)
 
         return response
@@ -202,14 +202,14 @@ class ConversationManager:
                 return None
 
             # Execute any tool calls from the reaction.
-            response = await self._execute_tools(response)
+            response, spoke = await self._execute_tools(response)
 
-            if response.speech:
+            if response.speech and not spoke:
                 await self._speak(response.speech)
 
             return response
 
-    async def _execute_tools(self, response: BrainResponse) -> BrainResponse:
+    async def _execute_tools(self, response: BrainResponse) -> tuple[BrainResponse, bool]:
         """Execute tool calls from a brain response and feed results back.
 
         Processes tools sequentially — each result may trigger follow-up
@@ -219,10 +219,11 @@ class ConversationManager:
             response: Brain response potentially containing tool calls.
 
         Returns:
-            Final BrainResponse after all tool chains are resolved.
+            Tuple of (final BrainResponse, whether speech was already spoken).
         """
         max_rounds = 5  # Prevent infinite tool loops.
         current = response
+        spoke = False
 
         for _ in range(max_rounds):
             if not current.tool_calls:
@@ -246,8 +247,9 @@ class ConversationManager:
                 # If follow-up has speech, speak it before next tool.
                 if current.speech:
                     await self._speak(current.speech)
+                    spoke = True
 
-        return current
+        return current, spoke
 
     async def _dispatch_tool(self, tool_name: str, params: dict) -> str:
         """Dispatch a single tool call to the appropriate handler.
@@ -327,6 +329,8 @@ class ConversationManager:
     ) -> None:
         """Continuously process vision events from the pipeline.
 
+        Applies a cooldown between reactions to avoid being too chatty.
+
         Args:
             shutdown: Event that signals when to stop.
         """
@@ -334,6 +338,10 @@ class ConversationManager:
             return
 
         log.info("conversation.vision_event_loop started")
+
+        # Minimum seconds between vision-triggered reactions.
+        cooldown_s = 30.0
+        last_reaction_at = 0.0
 
         while not shutdown.is_set():
             try:
@@ -345,11 +353,20 @@ class ConversationManager:
                 except asyncio.TimeoutError:
                     continue
 
+                # Enforce cooldown between vision reactions.
+                now = time.monotonic()
+                if (now - last_reaction_at) < cooldown_s:
+                    continue
+
                 summary = (
                     f"{event.event_type}: "
                     f"{', '.join(f'{k}={v}' for k, v in event.data.items())}"
                 )
-                await self.handle_vision_event(summary)
+                result = await self.handle_vision_event(summary)
+
+                # Only update cooldown if brain actually reacted.
+                if result is not None:
+                    last_reaction_at = time.monotonic()
 
             except Exception:
                 log.exception("conversation.vision_event_loop error")
