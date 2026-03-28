@@ -2,30 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import structlog
+
+from src.ollama_client import ChatMessage, OllamaClient
 
 if TYPE_CHECKING:
     from src.vision import VisionPipeline
 
 log = structlog.get_logger()
 
+# Maximum conversation history messages to keep (sliding window).
+_MAX_CONTEXT_MESSAGES = 20
 
-@dataclass
-class BrainResponse:
-    """Structured output from the brain."""
-
-    speech: str = ""  # Text to speak
-    tool_calls: list[dict] = None  # Tool invocations (look, move, turn, etc.)
-
-    def __post_init__(self):
-        if self.tool_calls is None:
-            self.tool_calls = []
-
-
-# Tools the brain can invoke
+# Tools the brain can invoke, formatted for the system prompt.
 TOOLS = [
     {
         "name": "look",
@@ -64,6 +58,72 @@ TOOLS = [
     },
 ]
 
+# Regex to extract tool calls from LLM output: [tool_name({"key": "value"})]
+_TOOL_CALL_PATTERN = re.compile(
+    r"\[(\w+)\((\{.*?\})\)\]",
+    re.DOTALL,
+)
+
+
+@dataclass
+class BrainResponse:
+    """Structured output from the brain."""
+
+    speech: str = ""
+    tool_calls: list[dict] = field(default_factory=list)
+
+
+def parse_response(text: str) -> BrainResponse:
+    """Parse raw LLM output into speech and tool calls.
+
+    The LLM is instructed to output tool calls as [tool_name({"param": "value"})].
+    Everything else is treated as speech.
+
+    Args:
+        text: Raw LLM response text.
+
+    Returns:
+        BrainResponse with separated speech and tool calls.
+    """
+    tool_calls = []
+    speech = text
+
+    for match in _TOOL_CALL_PATTERN.finditer(text):
+        tool_name = match.group(1)
+        try:
+            params = json.loads(match.group(2))
+        except json.JSONDecodeError:
+            log.warning("failed to parse tool params", tool=tool_name, raw=match.group(2))
+            continue
+        tool_calls.append({"name": tool_name, "parameters": params})
+        speech = speech.replace(match.group(0), "")
+
+    speech = speech.strip()
+
+    return BrainResponse(speech=speech, tool_calls=tool_calls)
+
+
+def build_tool_prompt() -> str:
+    """Format tool definitions for inclusion in the system prompt."""
+    lines = [
+        "You can perform actions by including tool calls in your response.",
+        "Format: [tool_name({\"param\": \"value\"})]",
+        "",
+        "Available tools:",
+    ]
+    for tool in TOOLS:
+        params_str = ", ".join(
+            f'"{k}": {v}' for k, v in tool["parameters"].items()
+        )
+        if params_str:
+            lines.append(f'- {tool["name"]}({{{params_str}}}): {tool["description"]}')
+        else:
+            lines.append(f'- {tool["name"]}(): {tool["description"]}')
+    lines.append("")
+    lines.append("You may include zero or more tool calls alongside your speech.")
+    lines.append("Example: That's interesting! Let me take a closer look. [look({})]")
+    return "\n".join(lines)
+
 
 class Brain:
     """Text-only LLM with tool use for actions and on-demand vision.
@@ -78,12 +138,12 @@ class Brain:
     - Tool calls to execute (look, move, turn, animate)
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, *, client: OllamaClient | None = None) -> None:
         self.model = config["models"]["llm"]
-        self.endpoint = config["endpoints"]["ollama"]
         self.system_prompt = config["personality"]["system_prompt"]
         self.max_tokens = config["thresholds"]["max_response_tokens"]
-        self._context: list[dict[str, str]] = []
+        self._client = client or OllamaClient(config["endpoints"]["ollama"])
+        self._context: list[ChatMessage] = []
         self._vision: VisionPipeline | None = None
 
     def set_vision(self, vision: VisionPipeline) -> None:
@@ -99,7 +159,18 @@ class Brain:
             scene_summary = self._vision.scene.summary()
             parts.append(f"\n[Current vision] {scene_summary}")
 
+        # Append tool definitions
+        parts.append(f"\n{build_tool_prompt()}")
+
         return "\n".join(parts)
+
+    def _trim_context(self) -> None:
+        """Keep conversation history within the sliding window.
+
+        Called after appending new messages, so we trim to max size.
+        """
+        while len(self._context) > _MAX_CONTEXT_MESSAGES:
+            self._context.pop(0)
 
     async def think(self, user_message: str) -> BrainResponse:
         """Generate a response to the user's message.
@@ -110,7 +181,33 @@ class Brain:
         Returns:
             BrainResponse with speech and optional tool calls.
         """
-        raise NotImplementedError("Brain.think not yet implemented")
+        self._context.append(ChatMessage(role="user", content=user_message))
+
+        messages = [
+            ChatMessage(role="system", content=self._build_system_prompt()),
+            *self._context,
+        ]
+
+        response = await self._client.chat(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+        )
+
+        raw_text = response.message.content
+        self._context.append(ChatMessage(role="assistant", content=raw_text))
+        self._trim_context()
+
+        result = parse_response(raw_text)
+
+        log.info(
+            "brain.think",
+            speech=result.speech[:80] if result.speech else "",
+            tool_calls=len(result.tool_calls),
+            duration_ms=response.total_duration_ms,
+        )
+
+        return result
 
     async def handle_tool_result(self, tool_name: str, result: str) -> BrainResponse:
         """Feed a tool call result back to the brain for follow-up.
@@ -122,10 +219,38 @@ class Brain:
         Returns:
             BrainResponse with follow-up speech/actions.
         """
-        raise NotImplementedError("Brain.handle_tool_result not yet implemented")
+        tool_msg = f"[{tool_name} result] {result}"
+        self._context.append(ChatMessage(role="user", content=tool_msg))
+
+        messages = [
+            ChatMessage(role="system", content=self._build_system_prompt()),
+            *self._context,
+        ]
+
+        response = await self._client.chat(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+        )
+
+        raw_text = response.message.content
+        self._context.append(ChatMessage(role="assistant", content=raw_text))
+        self._trim_context()
+
+        parsed = parse_response(raw_text)
+
+        log.info(
+            "brain.handle_tool_result",
+            tool=tool_name,
+            speech=parsed.speech[:80] if parsed.speech else "",
+        )
+
+        return parsed
 
     async def handle_vision_event(self, event_summary: str) -> BrainResponse | None:
         """React to a vision event (motion, new face, scene change).
+
+        Not every event needs a response — the brain decides.
 
         Args:
             event_summary: Text summary of what changed.
@@ -133,7 +258,40 @@ class Brain:
         Returns:
             BrainResponse if the brain wants to react, None if it ignores it.
         """
-        raise NotImplementedError("Brain.handle_vision_event not yet implemented")
+        prompt = (
+            f"[vision event] {event_summary}\n"
+            "React briefly if this is interesting, or say nothing if it's not noteworthy."
+        )
+        self._context.append(ChatMessage(role="user", content=prompt))
+
+        messages = [
+            ChatMessage(role="system", content=self._build_system_prompt()),
+            *self._context,
+        ]
+
+        response = await self._client.chat(
+            model=self.model,
+            messages=messages,
+            max_tokens=self.max_tokens,
+        )
+
+        raw_text = response.message.content
+        self._context.append(ChatMessage(role="assistant", content=raw_text))
+        self._trim_context()
+
+        parsed = parse_response(raw_text)
+
+        # If the brain has nothing to say, treat it as ignoring the event.
+        if not parsed.speech and not parsed.tool_calls:
+            return None
+
+        log.info(
+            "brain.handle_vision_event",
+            vision_event=event_summary[:60],
+            speech=parsed.speech[:80] if parsed.speech else "",
+        )
+
+        return parsed
 
     def reset_context(self) -> None:
         """Clear conversation history."""
