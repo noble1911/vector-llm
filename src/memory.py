@@ -412,7 +412,7 @@ class MemoryStore:
         if not self._pool:
             return
 
-        if len(user_message) < 15:
+        if len(user_message) < 5:
             return
 
         try:
@@ -458,7 +458,7 @@ class MemoryStore:
             resp = await client.post(
                 f"{url}/api/chat",
                 json={
-                    "model": "qwen2.5:3b",
+                    "model": "qwen2.5:7b",
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
                     "options": {"num_predict": 256},
