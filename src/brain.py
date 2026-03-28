@@ -142,28 +142,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "show_on_screen",
-            "description": "Display something on your face screen — icons, text, or colours.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["icon", "text", "color"],
-                        "description": "What kind of content to show",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Icon name (heart, star, sun, moon, question, exclamation, checkmark, x_mark, zzz), text string, or colour name (red, green, blue, etc.)",
-                    },
-                },
-                "required": ["type", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "set_eye_color",
             "description": "Change your eye color to express mood or emotion.",
             "parameters": {
