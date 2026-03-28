@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger()
 
 # Maximum conversation history messages to keep (sliding window).
-_MAX_CONTEXT_MESSAGES = 40
+_MAX_CONTEXT_MESSAGES = 16
 
 # Tools in Ollama native format (JSON Schema).
 TOOLS = [
@@ -240,6 +240,7 @@ class Brain:
         self.max_tokens = config["thresholds"]["max_response_tokens"]
         self._client = client or OllamaClient(config["endpoints"]["ollama"])
         self._context: list[ChatMessage] = []
+        self._recent_speeches: list[str] = []  # Track recent outputs for repetition detection.
         self._vision: VisionPipeline | None = None
         self._memory_context: MemoryContext | None = None
 
@@ -321,6 +322,19 @@ class Brain:
         self._context.append(ChatMessage(role="user", content=user_message))
 
         result, duration_ms = await self._call_llm(tools=TOOLS)
+
+        # Detect repetition — if we said this recently, clear context and retry.
+        if result.speech and result.speech in self._recent_speeches:
+            log.warning("brain.repetition_detected", speech=result.speech[:40])
+            self._context.clear()
+            self._context.append(ChatMessage(role="user", content=user_message))
+            result, duration_ms = await self._call_llm(tools=TOOLS)
+
+        # Track recent speeches (keep last 5).
+        if result.speech:
+            self._recent_speeches.append(result.speech)
+            if len(self._recent_speeches) > 5:
+                self._recent_speeches.pop(0)
 
         log.info(
             "brain.think",
