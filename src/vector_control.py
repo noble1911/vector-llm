@@ -29,6 +29,25 @@ DRIVE_DISTANCE_MAX = 500.0
 # Default drive speed (mm/s).
 DEFAULT_SPEED_MMPS = 100.0
 
+# Map simple emotion names to actual SDK animation triggers.
+EMOTION_TO_TRIGGER = {
+    "happy": "DriveEndHappy",
+    "sad": "FrustratedByFailureMajor",
+    "curious": "ObservingIdleWithHeadLookingUp",
+    "surprised": "ReactToUnexpectedMovement",
+    "excited": "DriveStartHappy",
+    "greeting": "ReactToGreeting",
+    "hello": "ReactToGreeting",
+    "goodbye": "ReactToGoodBye",
+    "love": "Feedback_ILoveYou",
+    "bored": "NothingToDoBoredIdle",
+    "frustrated": "FrustratedByFailureMajor",
+    "goodnight": "ReactToGoodNight",
+    "goodmorning": "ReactToGoodMorning",
+    "petting": "PettingLevel2",
+    "idle": "ObservingIdleEyesOnly",
+}
+
 
 class VectorConnectionError(Exception):
     """Raised when Vector is unreachable or connection fails."""
@@ -209,18 +228,21 @@ class VectorController:
     # ---- Animations ----
 
     async def play_animation(self, name: str) -> None:
-        """Play a named animation trigger on Vector.
+        """Play an animation on Vector, mapping emotion names to SDK triggers.
 
         Args:
-            name: Animation trigger name.
+            name: Emotion name (e.g. "happy") or raw SDK trigger name.
         """
         self._ensure_connected()
 
+        # Map emotion words to actual trigger names.
+        trigger = EMOTION_TO_TRIGGER.get(name.lower(), name)
+
         def _play():
-            self._robot.anim.play_animation_trigger(name)
+            self._robot.anim.play_animation_trigger(trigger)
 
         await asyncio.to_thread(_play)
-        log.info("vector.play_animation", name=name)
+        log.info("vector.play_animation", emotion=name, trigger=trigger)
 
     # ---- Eyes ----
 

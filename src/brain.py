@@ -103,7 +103,12 @@ TOOLS = [
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Animation name (e.g. happy, sad, curious, surprised)",
+                        "enum": [
+                            "happy", "sad", "curious", "surprised", "excited",
+                            "greeting", "goodbye", "love", "bored", "frustrated",
+                            "goodnight", "goodmorning",
+                        ],
+                        "description": "Emotion to express",
                     },
                 },
                 "required": ["name"],
