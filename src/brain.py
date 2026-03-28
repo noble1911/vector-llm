@@ -19,19 +19,47 @@ log = structlog.get_logger()
 _MAX_CONTEXT_MESSAGES = 16
 
 # Tools in Ollama native format (JSON Schema).
-TOOLS = [
+# Conversation tools — lightweight, for chatting.
+CHAT_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "look",
-            "description": "Look closely at the scene using your camera for a detailed description.",
+            "description": "Look closely at the scene using your camera.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": "Remember a fact (name, preference, anything personal).",
             "parameters": {
                 "type": "object",
-                "properties": {},
-                "required": [],
+                "properties": {
+                    "fact": {"type": "string"},
+                    "category": {"type": "string", "enum": ["preference", "relationship", "observation", "other"]},
+                },
+                "required": ["fact", "category"],
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Search your memories.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+# Action tools — for physical commands (move, turn, dock, etc.).
+ACTION_TOOLS = CHAT_TOOLS + [
     {
         "type": "function",
         "function": {
@@ -40,15 +68,8 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["forward", "backward"],
-                        "description": "Direction to move",
-                    },
-                    "distance_mm": {
-                        "type": "number",
-                        "description": "Distance in millimeters (10-500)",
-                    },
+                    "direction": {"type": "string", "enum": ["forward", "backward"]},
+                    "distance_mm": {"type": "number", "description": "10-500"},
                 },
                 "required": ["direction", "distance_mm"],
             },
@@ -62,15 +83,8 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["left", "right"],
-                        "description": "Direction to turn",
-                    },
-                    "angle_degrees": {
-                        "type": "number",
-                        "description": "Degrees to turn (e.g. 45, 90, 180)",
-                    },
+                    "direction": {"type": "string", "enum": ["left", "right"]},
+                    "angle_degrees": {"type": "number"},
                 },
                 "required": ["direction", "angle_degrees"],
             },
@@ -79,37 +93,20 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "set_head_angle",
-            "description": "Tilt your head up or down to look at different things.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "angle_degrees": {
-                        "type": "number",
-                        "description": "Head angle from -22 (down) to 45 (up)",
-                    },
-                },
-                "required": ["angle_degrees"],
-            },
+            "name": "dock",
+            "description": "Drive back onto the charging dock.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
         "type": "function",
         "function": {
             "name": "play_animation",
-            "description": "Express an emotion through body language.",
+            "description": "Express an emotion.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {
-                        "type": "string",
-                        "enum": [
-                            "happy", "sad", "curious", "surprised", "excited",
-                            "greeting", "goodbye", "love", "bored", "frustrated",
-                            "goodnight", "goodmorning",
-                        ],
-                        "description": "Emotion to express",
-                    },
+                    "name": {"type": "string", "enum": ["happy", "sad", "curious", "surprised", "excited", "greeting", "goodbye", "bored"]},
                 },
                 "required": ["name"],
             },
@@ -118,105 +115,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "dock",
-            "description": "Drive back onto the charging dock. Vector will navigate to the charger automatically.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "undock",
-            "description": "Drive off the charging dock so you can move around.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "set_eye_color",
-            "description": "Change your eye color to express mood or emotion.",
+            "description": "Change eye color.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "color": {
-                        "type": "string",
-                        "enum": [
-                            "red", "orange", "yellow", "green", "cyan",
-                            "blue", "purple", "pink", "white",
-                        ],
-                        "description": "Eye color to set",
-                    },
+                    "color": {"type": "string", "enum": ["red", "orange", "yellow", "green", "blue", "purple", "pink", "white"]},
                 },
                 "required": ["color"],
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "remember",
-            "description": "Remember a fact about someone or something for later. Use this when you learn names, preferences, or anything worth keeping.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "fact": {
-                        "type": "string",
-                        "description": "The fact to remember (e.g. 'Ron likes coffee')",
-                    },
-                    "category": {
-                        "type": "string",
-                        "enum": ["preference", "relationship", "observation", "schedule", "other"],
-                        "description": "Category of the fact",
-                    },
-                },
-                "required": ["fact", "category"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "recall",
-            "description": "Search your memories for something you learned before.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "What to search for (e.g. 'what is their name')",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "ask_butler",
-            "description": "Escalate a question to Butler (Claude) for complex queries you can't handle.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The question to ask Butler",
-                    },
-                },
-                "required": ["question"],
-            },
-        },
-    },
 ]
+
+# Keywords that suggest the user wants physical action.
+_ACTION_KEYWORDS = {"move", "forward", "backward", "turn", "left", "right", "spin", "dock", "charger", "undock", "eyes", "color", "animation", "happy", "sad", "dance"}
 
 
 @dataclass
@@ -321,7 +234,11 @@ class Brain:
         """
         self._context.append(ChatMessage(role="user", content=user_message))
 
-        result, duration_ms = await self._call_llm(tools=TOOLS)
+        # Pick tools based on what the user is asking for.
+        words = set(user_message.lower().split())
+        tools = ACTION_TOOLS if words & _ACTION_KEYWORDS else CHAT_TOOLS
+
+        result, duration_ms = await self._call_llm(tools=tools)
 
         # Detect repetition — if we said this recently, clear context and retry.
         if result.speech and result.speech in self._recent_speeches:
