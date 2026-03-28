@@ -93,10 +93,19 @@ async def run(config: dict) -> None:
 
     log.info("starting main loop")
 
-    # STT callback — transitions to CONVERSING and handles transcription.
+    # Robot names that trigger conversation (case-insensitive).
+    _wake_names = {"vector", "chili", "chilli"}
+
+    # STT callback — only enters conversation if name is spoken (or already active).
     async def on_transcription(text: str, timestamp: float) -> None:
+        text_lower = text.lower()
+
         if sm.state != State.CONVERSING:
+            # Check if the robot's name was spoken.
+            if not any(name in text_lower for name in _wake_names):
+                return  # Ignore — not addressed to us.
             await sm.transition_to(State.CONVERSING)
+
         sm.touch_interaction()
         await conversation.handle_transcription(text, timestamp=timestamp)
 
