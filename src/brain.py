@@ -40,7 +40,8 @@ TOOLS = [
         "name": "turn",
         "description": "Turn left or right.",
         "parameters": {
-            "angle_degrees": "degrees to turn (positive=left, negative=right)",
+            "direction": "left or right",
+            "angle_degrees": "degrees to turn (e.g. 45, 90, 180)",
         },
     },
     {
@@ -149,6 +150,7 @@ def build_tool_prompt() -> str:
     lines.append("Examples:")
     lines.append('  That\'s interesting! [look()]')
     lines.append('  Let me move closer. [move({"direction": "forward", "distance_mm": 100})]')
+    lines.append('  Turning left! [turn({"direction": "left", "angle_degrees": 90})]')
     return "\n".join(lines)
 
 

@@ -375,9 +375,12 @@ class VectorController:
                 return f"Moved {direction} {distance}mm"
 
             elif tool_name == "turn":
-                angle = parameters.get("angle_degrees", 0)
+                angle = abs(float(parameters.get("angle_degrees", 90)))
+                direction = parameters.get("direction", "left")
+                # Convert direction to signed angle: left=positive, right=negative.
+                if direction == "right":
+                    angle = -angle
                 await self.turn(angle)
-                direction = "left" if angle > 0 else "right"
                 return f"Turned {direction} {abs(angle)} degrees"
 
             elif tool_name == "set_head_angle":
