@@ -39,7 +39,7 @@ personality:
   voice: af_heart  # Kokoro voice ID
 
 models:
-  llm: qwen2.5:7b  # Text-only model with native tool calling
+  llm: qwen3:8b  # Best tool calling in its size class, think:false for speed
   vlm: qwen2.5vl:3b  # On-demand only, loaded when brain calls "look" tool
   stt: base.en  # English-only, 2x better than tiny with minimal latency cost
 

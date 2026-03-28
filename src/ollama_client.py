@@ -81,6 +81,7 @@ class OllamaClient:
             "model": model,
             "messages": [m.to_dict() for m in messages],
             "stream": False,
+            "think": False,  # Disable Qwen3 thinking mode for real-time responses.
             "options": {
                 "num_predict": max_tokens,
             },
