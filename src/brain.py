@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger()
 
 # Maximum conversation history messages to keep (sliding window).
-_MAX_CONTEXT_MESSAGES = 20
+_MAX_CONTEXT_MESSAGES = 40
 
 # Tools in Ollama native format (JSON Schema).
 TOOLS = [
@@ -252,7 +252,7 @@ class Brain:
         self._memory_context = ctx
 
     def _build_system_prompt(self) -> str:
-        """Build the full system prompt including memory and vision context."""
+        """Build the full system prompt including memory, history, and vision."""
         parts = [self.system_prompt.strip()]
 
         # Inject remembered facts from persistent memory.
@@ -260,11 +260,24 @@ class Brain:
             facts_text = self._memory_context.facts_prompt()
             if facts_text:
                 parts.append(facts_text)
+            history_text = self._memory_context.history_prompt()
+            if history_text:
+                parts.append(history_text)
 
         # Inject current vision state.
         if self._vision:
-            scene_summary = self._vision.scene.summary()
-            parts.append(f"\n[Current vision] {scene_summary}")
+            scene = self._vision.scene
+            # Quick CV summary (objects, motion).
+            cv_parts = []
+            if scene.objects:
+                cv_parts.append(f"objects: {', '.join(scene.objects)}")
+            if scene.motion_detected:
+                cv_parts.append(f"motion: {scene.motion_region}")
+            if cv_parts:
+                parts.append(f"\n[Current vision] {' | '.join(cv_parts)}")
+            # Last VLM description (richer scene understanding).
+            if scene.last_description:
+                parts.append(f"[Last scene] {scene.last_description}")
 
         return "\n".join(parts)
 

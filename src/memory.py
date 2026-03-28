@@ -48,10 +48,22 @@ class MemoryContext:
         if not self.facts:
             return ""
 
-        lines = ["\nWHAT YOU REMEMBER:"]
+        lines = ["\n[Memories]"]
         for fact in self.facts:
             category = fact.get("category", "other")
             lines.append(f"- [{category}] {fact['fact']}")
+        return "\n".join(lines)
+
+    def history_prompt(self) -> str:
+        """Format recent conversation history for context continuity."""
+        if not self.history:
+            return ""
+
+        lines = ["\n[Recent history]"]
+        for msg in self.history[-8:]:  # Last 8 messages
+            role = msg.get("role", "?")
+            content = msg.get("content", "")[:100]
+            lines.append(f"- {role}: {content}")
         return "\n".join(lines)
 
 
