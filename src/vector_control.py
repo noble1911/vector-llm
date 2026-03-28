@@ -240,16 +240,14 @@ class VectorController:
             img = Image.new("RGB", (184, 96), color=(0, 0, 0))
             draw = ImageDraw.Draw(img)
 
-            # Try to find a font that supports emoji, fall back to default.
+            # Use Apple Color Emoji for full-colour rendering.
             font = None
-            font_size = 48
             for font_path in [
                 "/System/Library/Fonts/Apple Color Emoji.ttc",
                 "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
             ]:
                 try:
-                    font = ImageFont.truetype(font_path, font_size)
+                    font = ImageFont.truetype(font_path, 64)
                     break
                 except (OSError, IOError):
                     continue
@@ -262,7 +260,7 @@ class VectorController:
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = (184 - tw) // 2
             y = (96 - th) // 2
-            draw.text((x, y), text, fill=(255, 255, 255), font=font)
+            draw.text((x, y), text, font=font, embedded_color=True)
 
             screen_data = anki_vector.screen.convert_image_to_screen_data(img)
             self._robot.screen.set_screen_with_image_data(
