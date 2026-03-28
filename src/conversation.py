@@ -365,13 +365,22 @@ class ConversationManager:
                 except asyncio.TimeoutError:
                     pass
 
-                # Periodic awareness tick — only when idle.
+                # Check for conversation timeout.
                 now = time.monotonic()
+                if (
+                    self._active
+                    and self._last_interaction_at > 0
+                    and (now - self._last_interaction_at) > self.timeout_s
+                ):
+                    self._end_conversation()
+
+                # Periodic awareness tick — only when idle.
                 if (
                     not self._active
                     and (now - last_awareness_at) >= awareness_interval_s
                 ):
                     last_awareness_at = now
+                    log.info("awareness_tick")
                     await self.awareness_tick()
 
             except Exception:
