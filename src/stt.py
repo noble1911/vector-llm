@@ -31,7 +31,7 @@ VAD_CHUNK_SAMPLES = 512
 MIN_SPEECH_MS = 1500  # Ignore segments shorter than this (Whisper hallucinates on short clips)
 MAX_SPEECH_MS = 30000  # Force-stop segments longer than this
 SILENCE_TIMEOUT_MS = 800  # End segment after this much silence
-PRE_ROLL_CHUNKS = 10  # Keep ~320ms of audio before VAD triggers to capture word onsets
+PRE_ROLL_CHUNKS = 20  # Keep ~640ms of audio before VAD triggers to capture word onsets
 
 
 def assemble_speech_segments(
