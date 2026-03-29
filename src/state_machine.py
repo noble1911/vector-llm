@@ -87,7 +87,7 @@ class StateMachine:
                 log.exception("state.release_control_failed")
 
     async def _enter_conversing(self) -> None:
-        """Acquire control for conversation."""
+        """Acquire control and show thinking animation."""
         self._last_interaction_at = time.monotonic()
         if not self._has_control:
             try:
@@ -98,6 +98,24 @@ class StateMachine:
                 log.info("state.control_acquired")
             except Exception:
                 log.exception("state.request_control_failed")
+                return
+
+        # Thinking animation — immediate feedback while LLM processes.
+        try:
+            asyncio.create_task(self._play_thinking())
+        except Exception:
+            pass
+
+    async def _play_thinking(self) -> None:
+        """Quick head tilt to show Vector is listening/thinking."""
+        try:
+            from anki_vector.util import Angle
+            await asyncio.to_thread(
+                self._vector.robot.behavior.set_head_angle,
+                Angle(degrees=20.0),
+            )
+        except Exception:
+            pass
 
     async def _enter_learning(self) -> None:
         """Acquire control briefly to look at something."""

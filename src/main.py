@@ -107,6 +107,10 @@ async def run(config: dict) -> None:
             await sm.transition_to(State.CONVERSING)
 
         sm.touch_interaction()
+
+        # Show thinking animation while LLM processes (non-blocking).
+        asyncio.create_task(sm._play_thinking())
+
         await conversation.handle_transcription(text, timestamp=timestamp)
 
     # Vision event callback — triggers LEARNING on significant changes.
