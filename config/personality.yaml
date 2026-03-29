@@ -22,7 +22,7 @@ personality:
   voice: af_heart  # Kokoro voice ID
 
 models:
-  llm: qwen3:8b  # Best tool calling in its size class, think:false for speed
+  llm: qwen3:14b  # Near GPT-4 tool calling (0.971 F1), auto-remembers and recalls
   vlm: qwen2.5vl:3b  # On-demand only, loaded when brain calls "look" tool
   stt: base.en  # English-only, 2x better than tiny with minimal latency cost
 
