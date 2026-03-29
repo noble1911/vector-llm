@@ -172,18 +172,35 @@ class STTListener:
             audio: Float32 audio at 16kHz.
 
         Returns:
-            Transcribed text, stripped.
+            Transcribed text, stripped. Empty string if rejected.
         """
         def _run():
-            segments, _ = self._whisper_model.transcribe(
+            segments, info = self._whisper_model.transcribe(
                 audio,
                 language="en",
                 beam_size=1,
                 vad_filter=False,  # We already ran VAD.
                 condition_on_previous_text=False,  # Each segment is independent.
+                # Bias toward expected vocabulary (robot names, common commands).
+                initial_prompt="Chili, Vector, move, turn, forward, backward, left, right, look, remember, charger, dock",
             )
-            # Fully consume the generator to release internal buffers.
-            text = " ".join(seg.text.strip() for seg in segments).strip()
+            # Collect segments with confidence filtering.
+            parts = []
+            for seg in segments:
+                # Skip low-confidence segments (likely hallucinations).
+                if seg.no_speech_prob > 0.6:
+                    continue
+                parts.append(seg.text.strip())
+
+            text = " ".join(parts).strip()
+
+            # Reject repetitive hallucinations (e.g. "the the the the").
+            words = text.lower().split()
+            if len(words) >= 4:
+                unique = set(words)
+                if len(unique) <= 2:
+                    return ""
+
             return text
 
         return await asyncio.to_thread(_run)
