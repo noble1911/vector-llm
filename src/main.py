@@ -94,7 +94,11 @@ async def run(config: dict) -> None:
     log.info("starting main loop")
 
     # Robot names that trigger conversation (case-insensitive).
-    _wake_names = {"vector", "chili", "chilli"}
+    # Includes phonetic variants that Whisper commonly produces.
+    _wake_names = {
+        "vector", "chili", "chilli", "chilly", "chile", "chilee",
+        "jilly", "jili", "silly", "tilly", "each and each",
+    }
 
     # STT callback — only enters conversation if name is spoken (or already active).
     async def on_transcription(text: str, timestamp: float) -> None:
@@ -123,8 +127,12 @@ async def run(config: dict) -> None:
         _learning_in_progress = True
         try:
             await sm.transition_to(State.LEARNING)
-            await conversation.handle_learning(event_summary)
-            await sm.transition_to(State.EXPLORING)
+            result = await conversation.handle_learning(event_summary)
+            # If Vector spoke, stay in CONVERSING so the person can reply.
+            if result and result.speech:
+                await sm.transition_to(State.CONVERSING)
+            else:
+                await sm.transition_to(State.EXPLORING)
         finally:
             _learning_in_progress = False
 
