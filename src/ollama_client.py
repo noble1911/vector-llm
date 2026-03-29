@@ -53,6 +53,7 @@ class OllamaClient:
     def __init__(self, base_url: str, timeout: httpx.Timeout | None = None) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout or _DEFAULT_TIMEOUT
+        self._client = httpx.AsyncClient(timeout=self._timeout)
 
     async def chat(
         self,
@@ -92,11 +93,10 @@ class OllamaClient:
             payload["tools"] = tools
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(
-                    f"{self._base_url}/api/chat",
-                    json=payload,
-                )
+            response = await self._client.post(
+                f"{self._base_url}/api/chat",
+                json=payload,
+            )
         except httpx.ConnectError as e:
             raise OllamaConnectionError(
                 f"Cannot connect to Ollama at {self._base_url}"
@@ -140,11 +140,14 @@ class OllamaClient:
     async def is_available(self) -> bool:
         """Check if Ollama is reachable."""
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(f"{self._base_url}/api/tags")
-                return response.status_code == 200
+            response = await self._client.get(f"{self._base_url}/api/tags")
+            return response.status_code == 200
         except (httpx.ConnectError, httpx.TimeoutException):
             return False
+
+    async def close(self) -> None:
+        """Close the persistent HTTP client."""
+        await self._client.aclose()
 
 
 class OllamaConnectionError(Exception):
