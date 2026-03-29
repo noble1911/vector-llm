@@ -100,16 +100,37 @@ class StateMachine:
                 log.exception("state.request_control_failed")
                 return
 
-        # Thinking animation — immediate feedback while LLM processes.
+        # Turn toward speaker and show thinking animation.
         try:
-            asyncio.create_task(self._play_thinking())
+            asyncio.create_task(self._look_at_speaker())
         except Exception:
             pass
 
-    async def _play_thinking(self) -> None:
-        """Quick head tilt to show Vector is listening/thinking."""
+    async def _look_at_speaker(self) -> None:
+        """Turn toward detected person and tilt head up (thinking)."""
         try:
             from anki_vector.util import Angle
+
+            # Find person position from YOLO scene state.
+            turn_angle = 0.0
+            if self._vision:
+                for obj in self._vision.scene.objects:
+                    if "person" not in obj.lower():
+                        continue
+                    if "(left" in obj:
+                        turn_angle = 25.0  # Turn left toward person
+                    elif "(right" in obj:
+                        turn_angle = -25.0  # Turn right toward person
+                    break  # First person found
+
+            # Turn toward speaker if not centered.
+            if turn_angle != 0.0:
+                await asyncio.to_thread(
+                    self._vector.robot.behavior.turn_in_place,
+                    Angle(degrees=turn_angle),
+                )
+
+            # Tilt head up — thinking gesture.
             await asyncio.to_thread(
                 self._vector.robot.behavior.set_head_angle,
                 Angle(degrees=20.0),

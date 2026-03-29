@@ -113,7 +113,7 @@ async def run(config: dict) -> None:
         sm.touch_interaction()
 
         # Show thinking animation while LLM processes (non-blocking).
-        asyncio.create_task(sm._play_thinking())
+        asyncio.create_task(sm._look_at_speaker())
 
         await conversation.handle_transcription(text, timestamp=timestamp)
 
