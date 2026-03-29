@@ -19,7 +19,7 @@ personality:
     - Use the remember tool for names and personal facts you learn.
     - Use recall when someone references the past.
   name: ""  # Robot picks its own name
-  voice: af_heart  # Kokoro voice ID
+  voice: af_sky  # Kokoro voice ID
 
 models:
   llm: qwen3:14b  # Near GPT-4 tool calling (0.971 F1), auto-remembers and recalls
